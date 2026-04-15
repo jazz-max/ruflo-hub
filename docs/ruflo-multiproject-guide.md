@@ -205,21 +205,7 @@ Ruflo MCP-сервер                        Claude Code (клиент)
 
 > **Почему не `--transport http`?** CLI ruflo принимает флаг `--transport http`, но в коде `startHttpServer()` делает `import('@claude-flow/mcp')` — этот пакет **не существует** (не опубликован в npm, это заглушка под будущую функциональность). Запуск упадёт с `Cannot find module '@claude-flow/mcp'`. Единственный рабочий транспорт — stdio. Для сетевого доступа нужен внешний прокси (supergateway), и именно это делает [ruflo-server](https://github.com/jazz-max/ruflo-server).
 
-**Способ 1: Docker Hub образ** (самый быстрый):
-
-```bash
-# Один контейнер ruflo + встроенный PostgreSQL+pgvector
-docker run -d --name ruflo-personal \
-  -p 3000:3000 \
-  -e POSTGRES_PASSWORD=mysecret \
-  -v ruflo-pgdata:/var/lib/postgresql/data \
-  jazzmax/ruflo-server:latest
-
-# Проверить
-curl http://localhost:3000/health
-```
-
-**Способ 2: Docker Compose** (ruflo + внешний PostgreSQL, рекомендуемый для продакшна):
+**Способ 1: Docker Compose** (рекомендуемый):
 
 ```bash
 git clone https://github.com/jazz-max/ruflo-server.git
@@ -230,7 +216,33 @@ cp .env.example .env
 #   POSTGRES_PASSWORD=...     — пароль БД
 #   POSTGRES_DATA=ruflo-pgdata — том для данных
 docker compose up -d
+
+# Проверить
+curl http://localhost:3000/health
 ```
+
+> **Важно:** Образ `jazzmax/ruflo-server` **не содержит PostgreSQL** — только Node.js, ruflo, supergateway и postgresql-client. PostgreSQL поднимается отдельным контейнером (`ruflo-db`) через docker-compose.
+
+**Способ 1б: Docker Hub образ** (если PostgreSQL уже есть):
+
+```bash
+# PostgreSQL с pgvector должен быть запущен и доступен.
+# Обычный postgres:17 без pgvector не подойдёт — нужен pgvector/pgvector:pg17.
+docker run -d --name ruflo-personal \
+  -p 3000:3000 \
+  -e RUFLO_PORT=3000 \
+  -e POSTGRES_HOST=192.168.1.100 \
+  -e POSTGRES_PORT=5432 \
+  -e POSTGRES_DB=ruflo \
+  -e POSTGRES_USER=ruflo \
+  -e POSTGRES_PASSWORD=mysecret \
+  jazzmax/ruflo-server:latest
+
+# Проверить
+curl http://localhost:3000/health
+```
+
+> `POSTGRES_HOST` — IP или hostname существующего сервера PostgreSQL. При запуске в Docker-сети можно указать имя контейнера (например, `postgres`). Схема RuVector (`claude_flow`) будет создана автоматически при первом старте.
 
 Параметры `.env`:
 
@@ -251,7 +263,7 @@ Ruflo MCP (stdio) → supergateway (SSE/HTTP) → порт 3000
                     PostgreSQL + pgvector (RuVector)
 ```
 
-**Способ 3: ручной запуск** (без Docker, если нужен кастомный сетап):
+**Способ 2: ручной запуск** (без Docker, если нужен кастомный сетап):
 
 ```bash
 npm install -g ruflo@latest pg supergateway
