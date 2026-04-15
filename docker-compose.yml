@@ -1,7 +1,7 @@
 services:
   ruflo:
     build: .
-    # image: yourname/ruflo-server:latest  # after publishing to Docker Hub
+    # image: jazzmax/ruflo-server:latest  # use pre-built image from Docker Hub
     container_name: ruflo-server
     restart: unless-stopped
     ports:

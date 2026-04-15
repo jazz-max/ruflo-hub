@@ -104,8 +104,8 @@ cat backup.sql | docker exec -i ruflo-postgres psql -U ruflo ruflo
 ## Docker Hub
 
 ```bash
-docker build -t yourname/ruflo-server:latest .
-docker push yourname/ruflo-server:latest
+docker build -t jazzmax/ruflo-server:latest .
+docker push jazzmax/ruflo-server:latest
 ```
 
-После публикации — раскомментировать строку `image:` в `docker-compose.yml` и убрать `build: .`.
+Или использовать готовый образ без сборки — раскомментировать `image:` в `docker-compose.yml` и убрать `build: .`.
