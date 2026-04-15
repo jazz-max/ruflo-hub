@@ -211,6 +211,27 @@ docker exec <postgres-container> pg_dump -U ruflo ruflo > backup.sql
 cat backup.sql | docker exec -i <postgres-container> psql -U ruflo ruflo
 ```
 
+## Обновление ruflo
+
+Пакет `ruflo` зафиксирован в образе на момент сборки.
+
+**Пересборка образа (рекомендуемый):**
+```bash
+# Локально
+docker compose build --no-cache
+docker compose up -d
+
+# Для Docker Hub
+docker build --no-cache -t jazzmax/ruflo-server:latest .
+docker push jazzmax/ruflo-server:latest
+```
+
+**Обновление внутри контейнера (быстро, не переживёт рестарт):**
+```bash
+docker exec <ruflo-container> npm install -g ruflo@latest
+docker restart <ruflo-container>
+```
+
 ## Docker Hub
 
 ```bash
