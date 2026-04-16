@@ -42,12 +42,6 @@ else
   echo "RuVector schema already exists."
 fi
 
-# Ruflo MCP works only in stdio mode.
-# supergateway wraps stdio → SSE/HTTP so clients can connect over network.
-echo "Starting Ruflo MCP via supergateway on port ${RUFLO_PORT}..."
-exec npx supergateway \
-  --stdio "npx ruflo@latest mcp start" \
-  --port "${RUFLO_PORT}" \
-  --baseUrl "http://0.0.0.0:${RUFLO_PORT}" \
-  --ssePath /sse \
-  --messagePath /message
+# MCP proxy: Express + Streamable HTTP wrapping ruflo stdio
+echo "Starting Ruflo MCP proxy on port ${RUFLO_PORT}..."
+exec node /app/server.mjs
