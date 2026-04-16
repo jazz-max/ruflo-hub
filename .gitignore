@@ -4,3 +4,4 @@ node_modules/
 data/
 .idea/
 /CLAUDE.md
+docker-compose.override.yml
