@@ -4,7 +4,7 @@
 services:
   ruflo:
     build: .
-    # image: jazzmax/ruflo-server:latest
+    # image: jazzmax/ruflo-hub:latest
     restart: unless-stopped
     ports:
       - "${RUFLO_PORT:-3000}:${RUFLO_PORT:-3000}"

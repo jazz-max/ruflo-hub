@@ -1,9 +1,12 @@
-# Ruflo Server — Docker
+# Ruflo Hub — Docker
 
-Docker-образ для централизованного Ruflo MCP-сервера. Активная память — локальный sql.js; PostgreSQL (pgvector) — **опциональный** бэкап/бридж для `ruflo ruvector import/export`.
+Центральный MCP-хаб для команды: HTTP-обёртка над Ruflo CLI (250+ инструментов), shared memory между сессиями Claude Code, statusline с remote-данными. Активная память — локальный sql.js; PostgreSQL (pgvector) — **опциональный** бэкап для `ruflo ruvector import/export`.
+
+> **Переименование:** проект назывался `ruflo-server` до 2026-04-17. Старый Docker-tag `jazzmax/ruflo-server:latest` остаётся как deprecated alias — обновитесь на `jazzmax/ruflo-hub:latest`. GitHub redirect работает автоматически.
 
 > **Гайды:**
 > - [Use cases](docs/use-cases.md) — сценарии для личного/командного/мульти-командного использования, перенос паттернов между инстансами
+> - [Swarm management](docs/swarm-management.md) — управление роями: концепция, lifecycle, квирки ruflo@3.5.x
 > - [Мультипроектная работа с ruflo](docs/ruflo-multiproject-guide.md) — передача знаний, координация задач, claims, hive-mind
 
 ```
@@ -40,7 +43,7 @@ docker compose up -d
 
 ## Встраивание как сервис
 
-Образ `jazzmax/ruflo-server` можно добавить в любой существующий `docker-compose.yml`.
+Образ `jazzmax/ruflo-hub` можно добавить в любой существующий `docker-compose.yml`.
 
 ### Вариант A: со своим PostgreSQL (pgvector)
 
@@ -51,7 +54,7 @@ services:
   # ... ваши сервисы ...
 
   ruflo:
-    image: jazzmax/ruflo-server:latest
+    image: jazzmax/ruflo-hub:latest
     restart: unless-stopped
     ports:
       - "3000:3000"
@@ -97,7 +100,7 @@ services:
   #   ...
 
   ruflo:
-    image: jazzmax/ruflo-server:latest
+    image: jazzmax/ruflo-hub:latest
     restart: unless-stopped
     ports:
       - "3000:3000"
@@ -121,7 +124,7 @@ services:
 ```yaml
 services:
   ruflo:
-    image: jazzmax/ruflo-server:latest
+    image: jazzmax/ruflo-hub:latest
     restart: unless-stopped
     ports:
       - "3000:3000"
@@ -152,7 +155,7 @@ services:
 ```yaml
 services:
   ruflo-team-alpha:
-    image: jazzmax/ruflo-server:latest
+    image: jazzmax/ruflo-hub:latest
     ports:
       - "3001:3001"
     environment:
@@ -163,7 +166,7 @@ services:
       POSTGRES_PASSWORD: changeme
 
   ruflo-team-beta:
-    image: jazzmax/ruflo-server:latest
+    image: jazzmax/ruflo-hub:latest
     ports:
       - "3002:3002"
     environment:
@@ -327,7 +330,7 @@ Authorization: Bearer <token>
 
 **При остановке** (`auto-memory-hook.mjs sync`):
 - читает Claude auto-memory файлы (`~/.claude/projects/.../memory/*.md`)
-- пушит feedback и project записи в ruflo-server
+- пушит feedback и project записи в ruflo-hub
 - доступно в следующей сессии и из других проектов
 
 ### Ручное управление
@@ -349,7 +352,7 @@ node .claude/helpers/auto-memory-hook.mjs import
 
 | Файл | Назначение |
 |------|-----------|
-| `auto-memory-hook.mjs` | Мост памяти — HTTP-клиент к ruflo-server |
+| `auto-memory-hook.mjs` | Мост памяти — HTTP-клиент к ruflo-hub |
 | `hook-handler.cjs` | Обработчик хуков Claude Code (routing, status, edit tracking) |
 | `statusline.cjs` | Генератор статусной строки (git, model, context, cost, swarm) |
 | `settings.json` | Шаблон `.claude/settings.json` с настройками хуков |
@@ -360,7 +363,7 @@ node .claude/helpers/auto-memory-hook.mjs import
 
 1. Переменная окружения `RUFLO_URL`
 2. Файл `.claude-flow/ruflo.json` (создаётся `/setup`)
-3. Авто-обнаружение из соседнего проекта `ruflo-server/`
+3. Авто-обнаружение из соседнего проекта `ruflo-hub/`
 4. Fallback: `http://localhost:3000/mcp`
 
 ## Переменные окружения
@@ -396,8 +399,8 @@ docker compose build --no-cache
 docker compose up -d
 
 # Для Docker Hub
-docker build --no-cache -t jazzmax/ruflo-server:latest .
-docker push jazzmax/ruflo-server:latest
+docker build --no-cache -t jazzmax/ruflo-hub:latest .
+docker push jazzmax/ruflo-hub:latest
 ```
 
 **Обновление внутри контейнера (быстро, не переживёт рестарт):**
@@ -409,14 +412,14 @@ docker restart <ruflo-container>
 ## Docker Hub
 
 ```bash
-docker pull jazzmax/ruflo-server:latest
+docker pull jazzmax/ruflo-hub:latest
 ```
 
 ## Сборка из исходников
 
 ```bash
-git clone https://github.com/jazz-max/ruflo-server.git
-cd ruflo-server
-docker build -t jazzmax/ruflo-server:latest .
-docker push jazzmax/ruflo-server:latest
+git clone https://github.com/jazz-max/ruflo-hub.git
+cd ruflo-hub
+docker build -t jazzmax/ruflo-hub:latest .
+docker push jazzmax/ruflo-hub:latest
 ```

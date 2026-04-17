@@ -269,8 +269,8 @@ app.get('/templates', (_req, res) => {
 });
 
 // GET /setup — return a self-configuring shell script
-// Usage: curl http://ruflo-server:PORT/setup | bash
-//    or: curl http://ruflo-server:PORT/setup?project=/path/to/project | bash
+// Usage: curl http://ruflo-hub:PORT/setup | bash
+//    or: curl http://ruflo-hub:PORT/setup?project=/path/to/project | bash
 app.get('/setup', (req, res) => {
   const serverHost = req.headers.host || `localhost:${PORT}`;
   const proto = req.headers['x-forwarded-proto'] || 'http';

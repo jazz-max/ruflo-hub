@@ -447,7 +447,7 @@ function getHooksStatus() {
   return { enabled, total };
 }
 
-// Query remote ruflo-server /stats endpoint (cached, strict timeout).
+// Query remote ruflo-hub /stats endpoint (cached, strict timeout).
 // Returns { vectorCount, namespaces } or null if unavailable.
 function getRemoteAgentDBStats() {
   const cachePath = path.join(CWD, '.claude-flow', 'data', 'remote-stats-cache.json');

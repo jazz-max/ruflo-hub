@@ -65,12 +65,12 @@ function getRufloConfig() {
   return _rufloConfig;
 }
 
-// Discover ruflo server URL from config, environment, or nearby ruflo-server project
+// Discover ruflo-hub URL from config, environment, or nearby ruflo-hub project
 function getRufloUrl() {
   const config = getRufloConfig();
   if (config.url !== 'http://localhost:3000/mcp') return config.url;
 
-  // Auto-discover from sibling ruflo-server project (fallback only)
+  // Auto-discover from sibling ruflo-hub project (fallback only)
   if (process.env.RUFLO_URL) return process.env.RUFLO_URL;
 
   // Check project config already read above
@@ -82,8 +82,10 @@ function getRufloUrl() {
     } catch { /* ignore */ }
   }
 
-  // 3. Auto-discover from sibling ruflo-server project
+  // 3. Auto-discover from sibling ruflo-hub project (with legacy ruflo-server fallback)
   const knownPaths = [
+    join(dirname(PROJECT_ROOT), 'ruflo-hub'),
+    join(PROJECT_ROOT, '..', 'ruflo-hub'),
     join(dirname(PROJECT_ROOT), 'ruflo-server'),
     join(PROJECT_ROOT, '..', 'ruflo-server'),
   ];

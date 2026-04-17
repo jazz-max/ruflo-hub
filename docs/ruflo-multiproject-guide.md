@@ -153,7 +153,7 @@ coordination_orchestrate — оркестрация (parallel / sequential / pip
 
 ```
 ┌─────────────────────────────────────────────────────┐
-│  Выделенный сервер (ruflo-server)                   │
+│  Выделенный сервер (ruflo-hub)                   │
 │                                                     │
 │  Ruflo MCP (stdio) → supergateway (SSE/HTTP)        │
 │  ├── RuVector → PostgreSQL     ← общая база знаний  │
@@ -199,17 +199,17 @@ Ruflo MCP-сервер                        Claude Code (клиент)
 
 ### Запуск MCP-сервера
 
-> **Важно:** Ruflo MCP работает только в stdio-режиме (v3.5). Для сетевого доступа используется [ruflo-server](https://github.com/jazz-max/ruflo-server) — Docker-контейнер с supergateway-прокси, оборачивающим stdio в SSE/HTTP.
+> **Важно:** Ruflo MCP работает только в stdio-режиме (v3.5). Для сетевого доступа используется [ruflo-hub](https://github.com/jazz-max/ruflo-hub) — Docker-контейнер с supergateway-прокси, оборачивающим stdio в SSE/HTTP.
 >
 > В stdio-режиме claims, tasks, hive-mind видны между сессиями **одного проекта**, но **не между проектами** (у каждого проекта свой процесс). Подробности и полная таблица → [Ограничения stdio-режима](#ограничения-stdio-режима-важно).
 
-> **Почему не `--transport http`?** CLI ruflo принимает флаг `--transport http`, но в коде `startHttpServer()` делает `import('@claude-flow/mcp')` — этот пакет **не существует** (не опубликован в npm, это заглушка под будущую функциональность). Запуск упадёт с `Cannot find module '@claude-flow/mcp'`. Единственный рабочий транспорт — stdio. Для сетевого доступа нужен внешний прокси (supergateway), и именно это делает [ruflo-server](https://github.com/jazz-max/ruflo-server).
+> **Почему не `--transport http`?** CLI ruflo принимает флаг `--transport http`, но в коде `startHttpServer()` делает `import('@claude-flow/mcp')` — этот пакет **не существует** (не опубликован в npm, это заглушка под будущую функциональность). Запуск упадёт с `Cannot find module '@claude-flow/mcp'`. Единственный рабочий транспорт — stdio. Для сетевого доступа нужен внешний прокси (supergateway), и именно это делает [ruflo-hub](https://github.com/jazz-max/ruflo-hub).
 
 **Способ 1: Docker Compose** (рекомендуемый):
 
 ```bash
-git clone https://github.com/jazz-max/ruflo-server.git
-cd ruflo-server
+git clone https://github.com/jazz-max/ruflo-hub.git
+cd ruflo-hub
 cp .env.example .env
 # Отредактировать .env:
 #   RUFLO_PORT=3000           — порт сервера
@@ -221,7 +221,7 @@ docker compose up -d
 curl http://localhost:3000/health
 ```
 
-> **Важно:** Образ `jazzmax/ruflo-server` **не содержит PostgreSQL** — только Node.js, ruflo, supergateway и postgresql-client. PostgreSQL поднимается отдельным контейнером (`ruflo-db`) через docker-compose.
+> **Важно:** Образ `jazzmax/ruflo-hub` **не содержит PostgreSQL** — только Node.js, ruflo, supergateway и postgresql-client. PostgreSQL поднимается отдельным контейнером (`ruflo-db`) через docker-compose.
 
 **Способ 1б: Docker Hub образ** (если PostgreSQL уже есть):
 
@@ -236,7 +236,7 @@ docker run -d --name ruflo-personal \
   -e POSTGRES_DB=ruflo \
   -e POSTGRES_USER=ruflo \
   -e POSTGRES_PASSWORD=mysecret \
-  jazzmax/ruflo-server:latest
+  jazzmax/ruflo-hub:latest
 
 # Проверить
 curl http://localhost:3000/health
@@ -651,9 +651,9 @@ claims_status(
 
 </details>
 
-**4в. Командная доска задач (через ruflo-server)**
+**4в. Командная доска задач (через ruflo-hub)**
 
-Сценарий: команда подключена к общему ruflo-server (HTTP). Тимлид ставит задачу, разработчик забирает. Все видят одну доску.
+Сценарий: команда подключена к общему ruflo-hub (HTTP). Тимлид ставит задачу, разработчик забирает. Все видят одну доску.
 
 Промпты для Claude Code:
 ```
@@ -899,26 +899,26 @@ Workers работают **внутри ruflo-процесса** — это не
 
 ### Сводка: что где видно
 
-| Подсистема | Сессии одного проекта | Между проектами (stdio) | ruflo-server |
+| Подсистема | Сессии одного проекта | Между проектами (stdio) | ruflo-hub |
 |---|---|---|---|
 | Memory, паттерны, эмбеддинги | ✓ (общий `.swarm/`) | ✓ (общий `.swarm/`) | ✓ |
 | Claims, tasks, hive-mind | ✓ (общий процесс) | **✗** (разные процессы) | ✓ |
 | Agents, coordination, swarm | ✓ (общий процесс) | **✗** | ✓ |
 | Перезапуск процесса (`/mcp`) | In-memory теряется | In-memory теряется | In-memory теряется |
 
-### Решение для мультипроектной работы: ruflo-server
+### Решение для мультипроектной работы: ruflo-hub
 
-Чтобы claims, tasks, hive-mind работали **между проектами**, нужен **один постоянно работающий процесс ruflo**, обёрнутый в HTTP. Готовое решение — [ruflo-server](https://github.com/jazz-max/ruflo-server):
+Чтобы claims, tasks, hive-mind работали **между проектами**, нужен **один постоянно работающий процесс ruflo**, обёрнутый в HTTP. Готовое решение — [ruflo-hub](https://github.com/jazz-max/ruflo-hub):
 
 ```bash
-git clone https://github.com/jazz-max/ruflo-server.git
-cd ruflo-server && cp .env.example .env
+git clone https://github.com/jazz-max/ruflo-hub.git
+cd ruflo-hub && cp .env.example .env
 docker compose up -d
 ```
 
 ```
 Проект A ──HTTP──┐
-Проект B ──HTTP──┤── ruflo-server (один процесс) ── .swarm/memory.db
+Проект B ──HTTP──┤── ruflo-hub (один процесс) ── .swarm/memory.db
 Проект C ──HTTP──┘        ↑
                     всё in-memory состояние
                     живёт в одном процессе
@@ -927,7 +927,7 @@ docker compose up -d
 
 ### Обходной путь: задачи через memory
 
-Без ruflo-server для передачи задач между проектами можно использовать `memory_store` / `memory_search` с namespace `tasks` — они пишут в общий `memory.db` и видны отовсюду.
+Без ruflo-hub для передачи задач между проектами можно использовать `memory_store` / `memory_search` с namespace `tasks` — они пишут в общий `memory.db` и видны отовсюду.
 
 ```
 # Проект A: поставить задачу
@@ -1034,22 +1034,22 @@ cp -r /path/to/project/.swarm ~/.ruflo-personal/
 ```
 ┌───────────────────────────────────────────────────────┐
 │  Командный сервер A (проект Alpha)                    │
-│  ruflo-server --port 3001                             │
+│  ruflo-hub --port 3001                             │
 │  Пользователи: вы + команда проекта Alpha             │
 └──────────────────────────┬────────────────────────────┘
                            │
 ┌──────────────────────────┼────────────────────────────┐
 │  Командный сервер B (проект Beta)                     │
-│  ruflo-server --port 3002                             │
+│  ruflo-hub --port 3002                             │
 │  Пользователи: вы + команда проекта Beta              │
 └──────────────────────────┼────────────────────────────┘
                            │
 ┌──────────────────────────┼────────────────────────────┐
-│  Личный ruflo (stdio или ruflo-server)                │
+│  Личный ruflo (stdio или ruflo-hub)                │
 │  Импорт памяти из всех проектов                       │
 │  Только для вас, доступен в любом проекте             │
 │  stdio: memory расшаривается, claims — нет            │
-│  ruflo-server: всё расшаривается между проектами      │
+│  ruflo-hub: всё расшаривается между проектами      │
 └──────────────────────────┴────────────────────────────┘
 ```
 
@@ -1072,11 +1072,11 @@ claude mcp get ruflo-personal
 claude mcp remove ruflo-personal -s user
 ```
 
-**Вариант B: ruflo-server (всё расшаривается между проектами)**
+**Вариант B: ruflo-hub (всё расшаривается между проектами)**
 
 ```bash
-# Поднять личный ruflo-server (Docker)
-git clone https://github.com/jazz-max/ruflo-server.git ~/ruflo-personal-server
+# Поднять личный ruflo-hub (Docker)
+git clone https://github.com/jazz-max/ruflo-hub.git ~/ruflo-personal-server
 cd ~/ruflo-personal-server && cp .env.example .env
 docker compose up -d
 

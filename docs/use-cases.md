@@ -1,4 +1,4 @@
-# Use Cases — ruflo-server
+# Use Cases — ruflo-hub
 
 Сценарии использования и рекомендуемые конфигурации. Для деталей развёртывания см. [README](../README.md), по управлению роями — [swarm-management](./swarm-management.md), по мультипроектной работе — [ruflo-multiproject-guide](./ruflo-multiproject-guide.md).
 
@@ -39,7 +39,7 @@ curl http://localhost:3000/setup | bash
 
 ## 2. Распределённая команда: распространение паттернов
 
-> **Это основная ценность ruflo-server для команд.** Не swarm, не hive-mind — а то, что один разработчик находит решение, а все остальные автоматически получают его в следующей сессии Claude Code.
+> **Это основная ценность ruflo-hub для команд.** Не swarm, не hive-mind — а то, что один разработчик находит решение, а все остальные автоматически получают его в следующей сессии Claude Code.
 
 **Кто:** команда 2-15 разработчиков, каждый в своём git-дереве, sync через push/pull, deploy по очереди.
 **Зачем:** накопление коллективного опыта. Паттерны, найденные одним, становятся доступны всем без ручного обмена.
@@ -55,11 +55,11 @@ curl http://localhost:3000/setup | bash
 │     "Always use UTF-8 BOM when writing CSV for Excel..."     │
 │                                                              │
 │  2. Stop hook → auto-memory-hook.mjs sync                    │
-│     → memory_store в ruflo-server, namespace="shared"        │
+│     → memory_store в ruflo-hub, namespace="shared"        │
 └─────────────────────────────────────────────────────────────┘
                               ↓
                     ┌──────────────────┐
-                    │   ruflo-server   │
+                    │   ruflo-hub   │
                     │   (общий)        │
                     └──────────────────┘
                               ↓
@@ -83,7 +83,7 @@ curl http://localhost:3000/setup | bash
 
 ```bash
 # На сервере команды — один раз
-git clone https://github.com/jazz-max/ruflo-server && cd ruflo-server
+git clone https://github.com/jazz-max/ruflo-hub && cd ruflo-hub
 cp .env.example .env
 # В .env: изменить MCP_AUTH_TOKEN на случайный, сменить POSTGRES_PASSWORD
 docker compose up -d
@@ -286,8 +286,8 @@ docker exec ruflo-db pg_dump -U ruflo ruflo > backup.sql
 ## 6. Мост памяти с Claude Code auto-memory
 
 **Как работает:** `templates/auto-memory-hook.mjs` ставится в проект через `/setup` и подключается как хук в `.claude/settings.json`:
-- `SessionStart` → `node .claude/helpers/auto-memory-hook.mjs import` — тянет паттерны с ruflo-server в контекст новой сессии Claude Code.
-- `Stop` → `node .claude/helpers/auto-memory-hook.mjs sync` — пушит заметки из `~/.claude/projects/.../memory/*.md` обратно на ruflo-server.
+- `SessionStart` → `node .claude/helpers/auto-memory-hook.mjs import` — тянет паттерны с ruflo-hub в контекст новой сессии Claude Code.
+- `Stop` → `node .claude/helpers/auto-memory-hook.mjs sync` — пушит заметки из `~/.claude/projects/.../memory/*.md` обратно на ruflo-hub.
 
 **Что это даёт:**
 - Никакого ручного `memory_store` — Claude Code сам пишет.
@@ -299,7 +299,7 @@ docker exec ruflo-db pg_dump -U ruflo ruflo > backup.sql
 
 ---
 
-## Чего ruflo-server НЕ делает
+## Чего ruflo-hub НЕ делает
 
 1. **Не хранит память в PostgreSQL активно.** Память живёт в sql.js файле `/app/.swarm/memory.db` внутри контейнера. PG-схема `claude_flow` создаётся на случай ручного `ruvector import/export`, но при `memory_store` туда ничего не пишется. См. [Architecture](#архитектура-памяти) ниже.
 
@@ -322,7 +322,7 @@ docker exec ruflo-db pg_dump -U ruflo ruflo > backup.sql
 └────────────────────┬──────────────────────────────┘
                      │
 ┌────────────────────▼──────────────────────────────┐
-│ Docker: ruflo-server (server.mjs + ruflo CLI)     │
+│ Docker: ruflo-hub (server.mjs + ruflo CLI)     │
 │                                                   │
 │   Express proxy (/mcp, /health, /stats, /setup)   │
 │       ↕ stdio                                     │

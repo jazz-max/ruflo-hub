@@ -124,7 +124,7 @@ Subprocess возвращает результат → Claude Code шлёт ег
 
 Формат: `🤖 Swarm ◉↻ [agentCount/maxAgents]`
 
-Источник — `/stats` endpoint на ruflo-server:
+Источник — `/stats` endpoint на ruflo-hub:
 ```json
 {
   "swarm": {
@@ -151,7 +151,7 @@ Subprocess возвращает результат → Claude Code шлёт ег
 Индикатор `◉↻`:
 - `◉` (зелёный) — swarm active
 - `○` (серый) — нет активных swarm
-- `↻` — данные с ruflo-server (а не из локальных файлов проекта)
+- `↻` — данные с ruflo-hub (а не из локальных файлов проекта)
 
 ---
 
@@ -201,7 +201,7 @@ curl -X POST http://server:3201/mcp \
   -d '{"jsonrpc":"2.0","method":"tools/call","params":{"name":"agent_terminate","arguments":{"agentId":"agent-..."}},"id":1}'
 ```
 
-Рекомендация: завести cron-job в `ruflo-server` контейнере, который раз в сутки подчищает агентов старше 7 дней. Пока не реализовано — делается вручную.
+Рекомендация: завести cron-job в `ruflo-hub` контейнере, который раз в сутки подчищает агентов старше 7 дней. Пока не реализовано — делается вручную.
 
 ---
 
