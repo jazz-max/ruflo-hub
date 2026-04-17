@@ -4,6 +4,7 @@
 
 > **Гайды:**
 > - [Use cases](docs/use-cases.md) — сценарии для личного/командного/мульти-командного использования, перенос паттернов между инстансами
+> - [Ruflo usage guide](docs/ruflo-usage-guide.md) — практическая выжимка из официального README: что делают хуки, какие MCP-tools реально нужны, skills, 3-tier routing
 > - [Swarm management](docs/swarm-management.md) — управление роями: концепция, lifecycle, квирки ruflo@3.5.x
 > - [Мультипроектная работа с ruflo](docs/ruflo-multiproject-guide.md) — передача знаний, координация задач, claims, hive-mind
 
