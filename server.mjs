@@ -167,6 +167,34 @@ app.get('/stats', async (_req, res) => {
     } catch { /* ignore */ }
   }
 
+  // Swarm status
+  summary.swarm = { active: false, agentCount: 0, maxAgents: 0, topology: null };
+  try {
+    const result = await client.callTool({ name: 'swarm_status', arguments: {} });
+    const text = result?.content?.[0]?.text || '';
+    try {
+      const parsed = JSON.parse(text);
+      summary.swarm.active = parsed.status === 'running' || parsed.status === 'active';
+      summary.swarm.agentCount = Number(parsed.agentCount) || 0;
+      summary.swarm.maxAgents = Number(parsed.maxAgents) || 0;
+      summary.swarm.topology = parsed.topology || null;
+    } catch { /* ignore */ }
+  } catch { /* ignore */ }
+
+  // Real agent count (swarm_status.agentCount may lag behind agent_spawn)
+  try {
+    const result = await client.callTool({ name: 'agent_list', arguments: {} });
+    const text = result?.content?.[0]?.text || '';
+    try {
+      const parsed = JSON.parse(text);
+      let count = 0;
+      if (Array.isArray(parsed)) count = parsed.length;
+      else if (Array.isArray(parsed?.agents)) count = parsed.agents.length;
+      else if (typeof parsed?.total === 'number') count = parsed.total;
+      if (count > summary.swarm.agentCount) summary.swarm.agentCount = count;
+    } catch { /* ignore */ }
+  } catch { /* ignore */ }
+
   res.json(summary);
 });
 

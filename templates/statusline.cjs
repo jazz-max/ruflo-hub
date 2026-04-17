@@ -310,6 +310,17 @@ function getSwarmStatus() {
   const staleThresholdMs = 5 * 60 * 1000;
   const now = Date.now();
 
+  // 0. Remote server (if configured) takes priority — reflects actual live state
+  const remote = getRemoteAgentDBStats();
+  if (remote && remote.swarm && (remote.swarm.active || remote.swarm.agentCount > 0)) {
+    return {
+      activeAgents: remote.swarm.agentCount,
+      maxAgents: remote.swarm.maxAgents || CONFIG.maxAgents,
+      coordinationActive: remote.swarm.active,
+      isRemote: true,
+    };
+  }
+
   const swarmStatePath = path.join(CWD, '.claude-flow', 'swarm', 'swarm-state.json');
   const swarmState = readJSON(swarmStatePath);
   if (swarmState) {
@@ -460,6 +471,12 @@ function getRemoteAgentDBStats() {
       const data = {
         vectorCount: Number(parsed.vectorCount) || 0,
         namespaces: Number(parsed.namespaces) || 0,
+        swarm: parsed.swarm && typeof parsed.swarm === 'object' ? {
+          active: !!parsed.swarm.active,
+          agentCount: Number(parsed.swarm.agentCount) || 0,
+          maxAgents: Number(parsed.swarm.maxAgents) || 0,
+          topology: parsed.swarm.topology || null,
+        } : null,
         remote: true,
       };
       try {
@@ -732,6 +749,7 @@ function generateStatusline() {
 
   // Line 2: Swarm + Hooks + CVE + Memory + Intelligence
   const swarmInd = swarm.coordinationActive ? c.brightGreen + '\u25C9' + c.reset : c.dim + '\u25CB' + c.reset;
+  const swarmRemoteInd = swarm.isRemote ? c.brightCyan + '\u21BB' + c.reset : '';
   const agentsColor = swarm.activeAgents > 0 ? c.brightGreen : c.red;
   const secIcon = security.status === 'CLEAN' ? '\uD83D\uDFE2' : (security.status === 'IN_PROGRESS' || security.status === 'STALE') ? '\uD83D\uDFE1' : (security.status === 'NONE' ? '\u26AA' : '\uD83D\uDD34');
   const secColor = security.status === 'CLEAN' ? c.brightGreen : (security.status === 'IN_PROGRESS' || security.status === 'STALE') ? c.brightYellow : (security.status === 'NONE' ? c.dim : c.brightRed);
@@ -739,7 +757,7 @@ function generateStatusline() {
   const intellColor = system.intelligencePct >= 80 ? c.brightGreen : system.intelligencePct >= 40 ? c.brightYellow : c.dim;
 
   lines.push(
-    c.brightYellow + '\uD83E\uDD16 Swarm' + c.reset + '  ' + swarmInd + ' [' + agentsColor + String(swarm.activeAgents).padStart(2) + c.reset + '/' + c.brightWhite + swarm.maxAgents + c.reset + ']  ' +
+    c.brightYellow + '\uD83E\uDD16 Swarm' + c.reset + '  ' + swarmInd + swarmRemoteInd + ' [' + agentsColor + String(swarm.activeAgents).padStart(2) + c.reset + '/' + c.brightWhite + swarm.maxAgents + c.reset + ']  ' +
     c.brightPurple + '\uD83D\uDC65 ' + system.subAgents + c.reset + '    ' +
     c.brightBlue + '\uD83E\uDE9D ' + hooksColor + hooks.enabled + c.reset + '/' + c.brightWhite + hooks.total + c.reset + '    ' +
     secIcon + ' ' + secColor + 'CVE ' + security.cvesFixed + c.reset + '/' + c.brightWhite + security.totalCves + c.reset + '    ' +

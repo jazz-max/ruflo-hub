@@ -17,6 +17,7 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-ruflo}
     volumes:
       - ruflo-memory:/app/.swarm
+      - ruflo-state:/app/.claude-flow
     depends_on:
       ruflo-db:
         condition: service_healthy
@@ -42,4 +43,6 @@ volumes:
   ruflo-pgdata:
     driver: local
   ruflo-memory:
+    driver: local
+  ruflo-state:
     driver: local
