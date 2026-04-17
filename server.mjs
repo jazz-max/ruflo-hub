@@ -1,7 +1,7 @@
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import express from 'express';
-import { readFileSync, existsSync, readdirSync } from 'fs';
+import { readFileSync, existsSync, readdirSync, statSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 
@@ -194,6 +194,38 @@ app.get('/stats', async (_req, res) => {
       if (count > summary.swarm.agentCount) summary.swarm.agentCount = count;
     } catch { /* ignore */ }
   } catch { /* ignore */ }
+
+  // Disk size of sql.js memory
+  summary.dbSizeKB = 0;
+  for (const fname of ['memory.db', 'memory.db-wal', 'memory.db-shm']) {
+    try {
+      const s = statSync(join('/app/.swarm', fname));
+      summary.dbSizeKB += Math.round(s.size / 1024);
+    } catch { /* ignore */ }
+  }
+
+  // Intelligence score (best effort — try neural_status, then hooks_intelligence_stats)
+  summary.intelligence = { score: 0, source: 'none' };
+  for (const toolName of ['neural_status', 'hooks_intelligence_stats', 'hooks_intelligence']) {
+    try {
+      const result = await client.callTool({ name: toolName, arguments: {} });
+      const text = result?.content?.[0]?.text || '';
+      try {
+        const parsed = JSON.parse(text);
+        const score = parsed?.intelligence?.score
+                   ?? parsed?.score
+                   ?? parsed?.intelligenceScore
+                   ?? parsed?.stats?.intelligence_score
+                   ?? parsed?.accuracy
+                   ?? 0;
+        if (score > 0) {
+          summary.intelligence.score = Math.min(100, Math.floor(Number(score) * (score <= 1 ? 100 : 1)));
+          summary.intelligence.source = toolName;
+          break;
+        }
+      } catch { /* ignore */ }
+    } catch { /* tool may not exist */ }
+  }
 
   res.json(summary);
 });

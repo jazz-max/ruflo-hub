@@ -357,12 +357,15 @@ function getSystemMetrics() {
   const learning = getLearningStats();
   const agentdb = getAgentDBStats();
 
-  // Intelligence from learning.json
+  // Intelligence from remote server first, then learning.json, then derived heuristic
+  const remote = getRemoteAgentDBStats();
   const learningData = readJSON(path.join(CWD, '.claude-flow', 'metrics', 'learning.json'));
   let intelligencePct = 0;
   let contextPct = 0;
 
-  if (learningData && learningData.intelligence && learningData.intelligence.score !== undefined) {
+  if (remote && remote.intelligenceScore > 0) {
+    intelligencePct = Math.min(100, Math.floor(remote.intelligenceScore));
+  } else if (learningData && learningData.intelligence && learningData.intelligence.score !== undefined) {
     intelligencePct = Math.min(100, Math.floor(learningData.intelligence.score));
   } else {
     // Use real data only — patterns from actual store, vectors from actual DB
@@ -471,6 +474,8 @@ function getRemoteAgentDBStats() {
       const data = {
         vectorCount: Number(parsed.vectorCount) || 0,
         namespaces: Number(parsed.namespaces) || 0,
+        dbSizeKB: Number(parsed.dbSizeKB) || 0,
+        intelligenceScore: Number(parsed.intelligence?.score) || 0,
         swarm: parsed.swarm && typeof parsed.swarm === 'object' ? {
           active: !!parsed.swarm.active,
           agentCount: Number(parsed.swarm.agentCount) || 0,
@@ -495,7 +500,7 @@ function getRemoteAgentDBStats() {
 function getAgentDBStats() {
   const remote = getRemoteAgentDBStats();
   let vectorCount = remote ? remote.vectorCount : 0;
-  let dbSizeKB = 0;
+  let dbSizeKB = remote && remote.dbSizeKB ? remote.dbSizeKB : 0;
   let namespaces = remote ? remote.namespaces : 0;
   let hasHnsw = false;
   const isRemote = !!remote && remote.vectorCount > 0;
@@ -504,7 +509,7 @@ function getAgentDBStats() {
   const storePath = path.join(CWD, '.claude-flow', 'data', 'auto-memory-store.json');
   const storeStat = safeStat(storePath);
   if (storeStat) {
-    dbSizeKB += storeStat.size / 1024;
+    if (!isRemote) dbSizeKB += storeStat.size / 1024;
     if (!isRemote) {
       try {
         const store = JSON.parse(fs.readFileSync(storePath, 'utf-8'));
@@ -518,7 +523,7 @@ function getAgentDBStats() {
   const hooksStorePath = path.join(CWD, '.claude-flow', 'memory', 'store.json');
   const hooksStoreStat = safeStat(hooksStorePath);
   if (hooksStoreStat) {
-    dbSizeKB += hooksStoreStat.size / 1024;
+    if (!isRemote) dbSizeKB += hooksStoreStat.size / 1024;
     if (!isRemote) {
       try {
         const store = JSON.parse(fs.readFileSync(hooksStorePath, 'utf-8'));
@@ -548,14 +553,14 @@ function getAgentDBStats() {
   for (const f of dbFiles) {
     const stat = safeStat(f);
     if (stat) {
-      dbSizeKB += stat.size / 1024;
+      if (!isRemote) dbSizeKB += stat.size / 1024;
       if (!isRemote) namespaces++;
     }
   }
 
   // 4. Graph data size
   const graphStat = safeStat(path.join(CWD, 'data', 'memory.graph'));
-  if (graphStat) dbSizeKB += graphStat.size / 1024;
+  if (graphStat && !isRemote) dbSizeKB += graphStat.size / 1024;
 
   // 5. HNSW index or memory package
   const hnswPaths = [
