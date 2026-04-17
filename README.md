@@ -1,22 +1,40 @@
 # Ruflo Server — Docker
 
-Docker-образ для централизованного Ruflo MCP-сервера с PostgreSQL (RuVector).
+Docker-образ для централизованного Ruflo MCP-сервера. Активная память — локальный sql.js; PostgreSQL (pgvector) — **опциональный** бэкап/бридж для `ruflo ruvector import/export`.
 
-> **Подробный гайд по мультипроектной работе с ruflo** — передача знаний, координация задач, claims, hive-mind, ограничения stdio vs ruflo-server: [docs/ruflo-multiproject-guide.md](docs/ruflo-multiproject-guide.md)
+> **Гайды:**
+> - [Use cases](docs/use-cases.md) — сценарии для личного/командного/мульти-командного использования, перенос паттернов между инстансами
+> - [Мультипроектная работа с ruflo](docs/ruflo-multiproject-guide.md) — передача знаний, координация задач, claims, hive-mind
 
 ```
 Ruflo MCP (stdio) → Express proxy (Streamable HTTP) → порт 3000
                           ↕
-                    PostgreSQL + pgvector (RuVector)
+                    sql.js (/app/.swarm/memory.db)  ← активная память
+                          ↕ (опционально, ручные команды)
+                    PostgreSQL + pgvector (RuVector)  ← архив/бридж
 ```
 
-## Быстрый старт (standalone)
+## Быстрый старт
+
+### С PostgreSQL (полный режим)
 
 ```bash
 cp .env.example .env
 # Отредактировать .env — сменить POSTGRES_PASSWORD
 docker compose up -d
 ```
+
+В `.env` должна быть строка `COMPOSE_PROFILES=pg` (есть в `.env.example` по умолчанию) — она включает сервис `ruflo-db`.
+
+### Lean-режим (без PostgreSQL)
+
+```bash
+cp .env.example .env
+# Закомментировать или удалить строку COMPOSE_PROFILES=pg
+docker compose up -d
+```
+
+Поднимутся только ruflo-сервисы. Память будет храниться в sql.js (`/app/.swarm/memory.db`), persistent через volume. Минус: недоступны команды `ruflo ruvector import/export` — для переноса паттернов между инстансами см. альтернативы в [docs/use-cases.md](docs/use-cases.md).
 
 Сервер: `http://localhost:3000/mcp`
 

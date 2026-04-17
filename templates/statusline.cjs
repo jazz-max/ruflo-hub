@@ -433,23 +433,68 @@ function getHooksStatus() {
   return { enabled, total };
 }
 
+// Query remote ruflo-server /stats endpoint (cached, strict timeout).
+// Returns { vectorCount, namespaces } or null if unavailable.
+function getRemoteAgentDBStats() {
+  const cachePath = path.join(CWD, '.claude-flow', 'data', 'remote-stats-cache.json');
+  const CACHE_TTL_MS = 60 * 1000;
+
+  const cache = readJSON(cachePath);
+  if (cache && cache.ts && (Date.now() - cache.ts) < CACHE_TTL_MS) {
+    return cache.data || null;
+  }
+
+  const config = readJSON(path.join(CWD, '.claude-flow', 'ruflo.json'));
+  if (!config || !config.serverUrl) return null;
+
+  let baseUrl = String(config.serverUrl);
+  if (baseUrl.endsWith('/mcp')) baseUrl = baseUrl.slice(0, -4);
+  baseUrl = baseUrl.replace(/\/+$/, '');
+
+  const raw = safeExec(`curl -sS --max-time 1 "${baseUrl}/stats"`, 1500);
+  if (!raw) return null;
+
+  try {
+    const parsed = JSON.parse(raw);
+    if (parsed && parsed.status === 'ok') {
+      const data = {
+        vectorCount: Number(parsed.vectorCount) || 0,
+        namespaces: Number(parsed.namespaces) || 0,
+        remote: true,
+      };
+      try {
+        const dataDir = path.join(CWD, '.claude-flow', 'data');
+        if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
+        fs.writeFileSync(cachePath, JSON.stringify({ ts: Date.now(), data }));
+      } catch { /* ignore */ }
+      return data;
+    }
+  } catch { /* ignore */ }
+
+  return null;
+}
+
 // AgentDB stats — count real entries from all data stores
 function getAgentDBStats() {
-  let vectorCount = 0;
+  const remote = getRemoteAgentDBStats();
+  let vectorCount = remote ? remote.vectorCount : 0;
   let dbSizeKB = 0;
-  let namespaces = 0;
+  let namespaces = remote ? remote.namespaces : 0;
   let hasHnsw = false;
+  const isRemote = !!remote && remote.vectorCount > 0;
 
   // 1. Count real entries from auto-memory-store.json
   const storePath = path.join(CWD, '.claude-flow', 'data', 'auto-memory-store.json');
   const storeStat = safeStat(storePath);
   if (storeStat) {
     dbSizeKB += storeStat.size / 1024;
-    try {
-      const store = JSON.parse(fs.readFileSync(storePath, 'utf-8'));
-      if (Array.isArray(store)) vectorCount += store.length;
-      else if (store && store.entries) vectorCount += store.entries.length;
-    } catch { /* fall back */ }
+    if (!isRemote) {
+      try {
+        const store = JSON.parse(fs.readFileSync(storePath, 'utf-8'));
+        if (Array.isArray(store)) vectorCount += store.length;
+        else if (store && store.entries) vectorCount += store.entries.length;
+      } catch { /* fall back */ }
+    }
   }
 
   // 2. Count entries from hooks memory store (.claude-flow/memory/store.json)
@@ -457,23 +502,27 @@ function getAgentDBStats() {
   const hooksStoreStat = safeStat(hooksStorePath);
   if (hooksStoreStat) {
     dbSizeKB += hooksStoreStat.size / 1024;
-    try {
-      const store = JSON.parse(fs.readFileSync(hooksStorePath, 'utf-8'));
-      if (store && store.entries) {
-        const entryCount = Object.keys(store.entries).length;
-        vectorCount = Math.max(vectorCount, entryCount);
-        if (entryCount > 0) namespaces++;
-      }
-    } catch { /* fall back */ }
+    if (!isRemote) {
+      try {
+        const store = JSON.parse(fs.readFileSync(hooksStorePath, 'utf-8'));
+        if (store && store.entries) {
+          const entryCount = Object.keys(store.entries).length;
+          vectorCount = Math.max(vectorCount, entryCount);
+          if (entryCount > 0) namespaces++;
+        }
+      } catch { /* fall back */ }
+    }
   }
 
   // 3. Count entries from ranked-context.json
-  try {
-    const ranked = readJSON(path.join(CWD, '.claude-flow', 'data', 'ranked-context.json'));
-    if (ranked && ranked.entries && ranked.entries.length > vectorCount) vectorCount = ranked.entries.length;
-  } catch { /* ignore */ }
+  if (!isRemote) {
+    try {
+      const ranked = readJSON(path.join(CWD, '.claude-flow', 'data', 'ranked-context.json'));
+      if (ranked && ranked.entries && ranked.entries.length > vectorCount) vectorCount = ranked.entries.length;
+    } catch { /* ignore */ }
+  }
 
-  // 3. Add DB file sizes
+  // 4. Add DB file sizes
   const dbFiles = [
     path.join(CWD, 'data', 'memory.db'),
     path.join(CWD, '.claude-flow', 'memory.db'),
@@ -483,7 +532,7 @@ function getAgentDBStats() {
     const stat = safeStat(f);
     if (stat) {
       dbSizeKB += stat.size / 1024;
-      namespaces++;
+      if (!isRemote) namespaces++;
     }
   }
 
@@ -509,7 +558,7 @@ function getAgentDBStats() {
     }
   }
 
-  return { vectorCount, dbSizeKB: Math.floor(dbSizeKB), namespaces, hasHnsw };
+  return { vectorCount, dbSizeKB: Math.floor(dbSizeKB), namespaces, hasHnsw, isRemote };
 }
 
 // Test stats (count files only — NO reading file contents)
@@ -726,9 +775,10 @@ function generateStatusline() {
   if (integration.hasApi) integStr += (integStr ? '  ' : '') + c.brightGreen + '\u25C6' + c.reset + 'API';
   if (!integStr) integStr = c.dim + '\u25CF none' + c.reset;
 
+  const remoteInd = agentdb.isRemote ? c.brightCyan + '\u21BB' + c.reset : '';
   lines.push(
     c.brightCyan + '\uD83D\uDCCA AgentDB' + c.reset + '    ' +
-    c.cyan + 'Vectors' + c.reset + ' ' + vectorColor + '\u25CF' + agentdb.vectorCount + hnswInd + c.reset + '  ' + c.dim + '\u2502' + c.reset + '  ' +
+    c.cyan + 'Vectors' + c.reset + ' ' + vectorColor + '\u25CF' + agentdb.vectorCount + hnswInd + c.reset + remoteInd + '  ' + c.dim + '\u2502' + c.reset + '  ' +
     c.cyan + 'Size' + c.reset + ' ' + c.brightWhite + sizeDisp + c.reset + '  ' + c.dim + '\u2502' + c.reset + '  ' +
     c.cyan + 'Tests' + c.reset + ' ' + testColor + '\u25CF' + tests.testFiles + c.reset + ' ' + c.dim + '(~' + tests.testCases + ' cases)' + c.reset + '  ' + c.dim + '\u2502' + c.reset + '  ' +
     integStr

@@ -20,8 +20,8 @@ function ts() {
 console.log(`[${ts()}] Connecting to ruflo stdio...`);
 
 const stdioTransport = new StdioClientTransport({
-  command: 'npx',
-  args: ['ruflo@latest', 'mcp', 'start'],
+  command: 'ruflo',
+  args: ['mcp', 'start'],
 });
 
 const client = new Client({ name: 'ruflo-proxy', version: '1.0.0' });
@@ -113,6 +113,61 @@ app.delete('/mcp', (_req, res) => {
 
 app.get('/health', (_req, res) => {
   res.json({ status: 'ok', tools: toolsResult.tools.length });
+});
+
+// GET /stats — summary for statusline clients (no auth, like /health).
+// Tries memory_stats first, falls back to memory_list for vector counting.
+app.get('/stats', async (_req, res) => {
+  const summary = { status: 'ok', vectorCount: 0, namespaces: 0, tools: toolsResult.tools.length, source: 'none' };
+
+  const extractCount = (text) => {
+    if (!text) return null;
+    try {
+      const parsed = JSON.parse(text);
+      if (Array.isArray(parsed)) return { count: parsed.length, namespaces: 0 };
+      const count = parsed.totalEntries ?? parsed.total ?? parsed.count
+                  ?? parsed.entries?.length ?? parsed.items?.length
+                  ?? parsed.vectors ?? parsed.vectorCount ?? 0;
+      const nsRaw = parsed.namespaces;
+      const namespaces = Array.isArray(nsRaw) ? nsRaw.length
+                       : typeof nsRaw === 'number' ? nsRaw
+                       : (nsRaw && typeof nsRaw === 'object') ? Object.keys(nsRaw).length
+                       : parsed.namespaceCount ?? 0;
+      return { count: Number(count) || 0, namespaces: Number(namespaces) || 0 };
+    } catch {
+      const m = text.match(/(\d+)\s*(?:total\s*)?(?:entries|records|patterns|vectors)/i);
+      if (m) return { count: parseInt(m[1], 10) || 0, namespaces: 0 };
+      return null;
+    }
+  };
+
+  // Try memory_stats
+  try {
+    const result = await client.callTool({ name: 'memory_stats', arguments: {} });
+    const text = result?.content?.[0]?.text || '';
+    const parsed = extractCount(text);
+    if (parsed) {
+      summary.vectorCount = parsed.count;
+      summary.namespaces = parsed.namespaces;
+      summary.source = 'memory_stats';
+    }
+  } catch { /* fall through */ }
+
+  // Fallback: memory_list
+  if (summary.vectorCount === 0) {
+    try {
+      const result = await client.callTool({ name: 'memory_list', arguments: {} });
+      const text = result?.content?.[0]?.text || '';
+      const parsed = extractCount(text);
+      if (parsed) {
+        summary.vectorCount = parsed.count;
+        if (!summary.namespaces) summary.namespaces = parsed.namespaces;
+        summary.source = summary.source === 'none' ? 'memory_list' : summary.source;
+      }
+    } catch { /* ignore */ }
+  }
+
+  res.json(summary);
 });
 
 // ─── MCP Streamable HTTP: handle OAuth discovery gracefully ───────

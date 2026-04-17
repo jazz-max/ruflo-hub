@@ -3,5 +3,8 @@
 node_modules/
 data/
 .idea/
+.claude/
+.claude-flow/
 /CLAUDE.md
 docker-compose.override.yml
+/.mcp.json

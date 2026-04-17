@@ -15,12 +15,16 @@ services:
       POSTGRES_DB: ${POSTGRES_DB:-ruflo}
       POSTGRES_USER: ${POSTGRES_USER:-ruflo}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-ruflo}
+    volumes:
+      - ruflo-memory:/app/.swarm
     depends_on:
       ruflo-db:
         condition: service_healthy
+        required: false
 
   ruflo-db:
     image: pgvector/pgvector:pg17
+    profiles: ["pg"]
     restart: unless-stopped
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-ruflo}
@@ -36,4 +40,6 @@ services:
 
 volumes:
   ruflo-pgdata:
+    driver: local
+  ruflo-memory:
     driver: local
