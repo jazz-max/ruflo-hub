@@ -3,7 +3,10 @@
 node_modules/
 data/
 .idea/
-.claude/
+.claude/*
+!.claude/skills/
+!.claude/agents/
+!.claude/commands/
 .claude-flow/
 /CLAUDE.md
 docker-compose.override.yml
