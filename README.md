@@ -216,14 +216,16 @@ curl "http://your-server:3000/setup?token=YOUR_TOKEN&name=ruflo-team" | bash -s 
 |----------|-------------|----------|
 | `token` | — | Bearer-токен авторизации (значение `MCP_AUTH_TOKEN` сервера) |
 | `name` | `ruflo` | Имя MCP-сервера в `.mcp.json` (определяет префикс инструментов: `mcp__<name>__*`) |
+| `skills` | `1` | Ставить bundle skills/agents/commands. `0` (`false`/`no`/`off`) — отключить |
 
 #### Что делает скрипт
 
 1. Скачивает хуки с сервера (`auto-memory-hook.mjs`, `hook-handler.cjs`, `statusline.cjs`) в `.claude/helpers/`
-2. Создаёт `.claude-flow/ruflo.json` с URL сервера и токеном (для моста памяти)
-3. Создаёт или дополняет `.mcp.json` с MCP-подключением и заголовком авторизации
-4. Создаёт `.claude/settings.json` с настройками хуков (если файл не существует)
-5. Проверяет связь с сервером
+2. Скачивает и распаковывает bundle `skills` + `agents` + `commands` в `.claude/` (существующие файлы не перезаписываются — кастомизации сохраняются; отключается через `?skills=0`)
+3. Создаёт `.claude-flow/ruflo.json` с URL сервера и токеном (для моста памяти)
+4. Создаёт или дополняет `.mcp.json` с MCP-подключением и заголовком авторизации
+5. Создаёт `.claude/settings.json` с настройками хуков (если файл не существует)
+6. Проверяет связь с сервером
 
 #### Примеры
 
@@ -237,6 +239,9 @@ curl "http://192.168.1.100:3000/setup?token=572fd23e-ae2e-4e3b-9ea5-59e7a84c09a7
 # Кастомное имя для разных команд
 curl "http://192.168.1.100:3001/setup?token=TOKEN_A&name=ruflo-alpha" | bash
 curl "http://192.168.1.100:3002/setup?token=TOKEN_B&name=ruflo-beta" | bash
+
+# Только MCP-мост, без skills/agents (совместимость со старым поведением)
+curl "http://192.168.1.100:3000/setup?token=TOKEN&skills=0" | bash
 ```
 
 #### ⚠️ Сервер на той же машине — используй hostname, не IP
@@ -292,6 +297,8 @@ claude mcp add --transport http \
 | POST | `/mcp` | JSON-RPC прокси к ruflo MCP (основной эндпоинт) |
 | GET | `/health` | Статус сервера (`{"status":"ok","tools":257}`) |
 | GET | `/setup` | Shell-скрипт для автоматической настройки проекта |
+| GET | `/update-bundle` | Shell-скрипт для обновления только bundle (skills+agents+commands) |
+| GET | `/bundle.tar.gz` | Tar-gz архив bundle (используется `/setup` и `/update-bundle`) |
 | GET | `/templates` | Список доступных шаблонов |
 | GET | `/templates/:name` | Скачать конкретный шаблон |
 
@@ -322,7 +329,7 @@ curl -X POST http://your-server:3000/mcp \
 Authorization: Bearer <token>
 ```
 
-Эндпоинты `/health`, `/setup`, `/templates` доступны без авторизации.
+Эндпоинты `/health`, `/setup`, `/update-bundle`, `/bundle.tar.gz`, `/templates` доступны без авторизации.
 
 ## Мост памяти (Memory Bridge)
 

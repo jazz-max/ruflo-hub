@@ -4,10 +4,12 @@ import express from 'express';
 import { readFileSync, existsSync, readdirSync, statSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
+import { spawn } from 'child_process';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 const TEMPLATES_DIR = join(__dirname, 'templates');
+const BUNDLE_DIR = join(__dirname, 'skills-bundle');
 
 const PORT = parseInt(process.env.RUFLO_PORT || '3000', 10);
 const TOKEN = process.env.MCP_AUTH_TOKEN || '';
@@ -264,6 +266,84 @@ app.get('/templates/:name', (req, res) => {
   res.type('text/plain').send(readFileSync(filePath, 'utf-8'));
 });
 
+// GET /bundle.tar.gz — stream tar.gz of skills + agents + commands
+// Consumed by /setup; can be used standalone to mirror ruflo init output.
+app.get('/bundle.tar.gz', (_req, res) => {
+  if (!existsSync(BUNDLE_DIR)) {
+    return res.status(404).json({ error: 'bundle_not_available' });
+  }
+  res.type('application/gzip');
+  res.setHeader('Content-Disposition', 'attachment; filename="ruflo-bundle.tar.gz"');
+  const tar = spawn('tar', ['-czf', '-', '-C', BUNDLE_DIR, '.']);
+  tar.stdout.pipe(res);
+  tar.stderr.on('data', (d) => console.error(`[${ts()}] tar: ${d.toString().trim()}`));
+  tar.on('error', (err) => {
+    console.error(`[${ts()}] tar spawn error:`, err.message);
+    if (!res.headersSent) res.status(500).json({ error: 'tar_failed' });
+  });
+});
+
+// GET /update-bundle — return a shell script that installs only the bundle
+// Usage: curl http://ruflo-hub:PORT/update-bundle | bash
+//    or: curl http://ruflo-hub:PORT/update-bundle | bash -s /path/to/project
+//    or: curl "http://ruflo-hub:PORT/update-bundle?force=1" | bash  (overwrite existing)
+app.get('/update-bundle', (req, res) => {
+  const serverHost = req.headers.host || `localhost:${PORT}`;
+  const proto = req.headers['x-forwarded-proto'] || 'http';
+  const baseUrl = `${proto}://${serverHost}`;
+  const force = ['1', 'true', 'yes', 'on'].includes(String(req.query.force || '').toLowerCase());
+
+  const script = `#!/bin/bash
+# ╔══════════════════════════════════════════════════════╗
+# ║  RuFlo Hub — Bundle Update (skills + agents + commands) ║
+# ║  Server: ${baseUrl.padEnd(41)}║
+# ╚══════════════════════════════════════════════════════╝
+set -euo pipefail
+
+PROJECT_DIR="\${1:-\$(pwd)}"
+FORCE="${force ? '1' : '0'}"
+
+echo ""
+echo "  RuFlo Bundle Update"
+echo "  Server:  ${baseUrl}"
+echo "  Project: \$PROJECT_DIR"
+echo "  Force:   ${force ? 'yes (overwrite existing files)' : 'no (preserve existing files)'}"
+echo ""
+
+if [ ! -d "\$PROJECT_DIR" ]; then
+  echo "Error: \$PROJECT_DIR is not a directory"
+  echo "Usage: curl ${baseUrl}/update-bundle | bash -s /path/to/project"
+  exit 1
+fi
+
+mkdir -p "\$PROJECT_DIR/.claude"
+TMP_BUNDLE="\$(mktemp -t ruflo-bundle.XXXXXX.tar.gz)"
+
+if ! curl -sf "${baseUrl}/bundle.tar.gz" -o "\$TMP_BUNDLE"; then
+  rm -f "\$TMP_BUNDLE"
+  echo "  ✗ Failed to download bundle from ${baseUrl}/bundle.tar.gz"
+  exit 1
+fi
+
+if [ "\$FORCE" = "1" ]; then
+  tar -xzf "\$TMP_BUNDLE" -C "\$PROJECT_DIR/.claude"
+else
+  # -k: do not overwrite existing files (preserves user customizations)
+  tar -xzkf "\$TMP_BUNDLE" -C "\$PROJECT_DIR/.claude" 2>/dev/null || true
+fi
+rm -f "\$TMP_BUNDLE"
+
+echo "  ✓ .claude/skills   (\$(ls "\$PROJECT_DIR/.claude/skills"   2>/dev/null | wc -l | tr -d ' ') entries)"
+echo "  ✓ .claude/agents   (\$(ls "\$PROJECT_DIR/.claude/agents"   2>/dev/null | wc -l | tr -d ' ') entries)"
+echo "  ✓ .claude/commands (\$(ls "\$PROJECT_DIR/.claude/commands" 2>/dev/null | wc -l | tr -d ' ') entries)"
+echo ""
+echo "  Done. Restart Claude Code to load new skills."
+echo ""
+`;
+
+  res.type('text/plain').send(script);
+});
+
 // GET /templates — list available templates
 app.get('/templates', (_req, res) => {
   try {
@@ -283,6 +363,8 @@ app.get('/setup', (req, res) => {
   const baseUrl = `${proto}://${serverHost}`;
   const token = req.query.token || '';
   const name = req.query.name || 'ruflo';
+  // Skills/agents bundle is installed by default. Disable with ?skills=0 or ?skills=false.
+  const skillsEnabled = !['0', 'false', 'no', 'off'].includes(String(req.query.skills || '').toLowerCase());
 
   const script = `#!/bin/bash
 # ╔══════════════════════════════════════════════════════╗
@@ -294,6 +376,7 @@ set -euo pipefail
 RUFLO_URL="${baseUrl}/mcp"
 RUFLO_TOKEN="${token}"
 RUFLO_NAME="${name}"
+SKILLS_ENABLED="${skillsEnabled ? '1' : '0'}"
 PROJECT_DIR="\${1:-\$(pwd)}"
 
 echo ""
@@ -301,6 +384,7 @@ echo "  RuFlo Setup"
 echo "  Server:  ${baseUrl}"
 echo "  Name:    ${name}"
 echo "  Token:   ${token ? '***' + token.slice(-4) : '(none)' }"
+echo "  Skills:  ${skillsEnabled ? 'yes (skills + agents + commands)' : 'no (disabled via ?skills=0)'}"
 echo "  Project: \$PROJECT_DIR"
 echo ""
 
@@ -324,6 +408,30 @@ for file in auto-memory-hook.mjs hook-handler.cjs statusline.cjs; do
     echo "    ✗ .claude/helpers/\$file (skipped)"
   fi
 done
+
+# Download skills/agents/commands bundle (default on; disable with ?skills=0)
+if [ "\$SKILLS_ENABLED" = "1" ]; then
+  echo ""
+  echo "  Downloading skills bundle..."
+  TMP_BUNDLE="\$(mktemp -t ruflo-bundle.XXXXXX.tar.gz)"
+  if curl -sf "${baseUrl}/bundle.tar.gz" -o "\$TMP_BUNDLE"; then
+    mkdir -p "\$PROJECT_DIR/.claude"
+    # -k: do not overwrite existing files (preserves user customizations)
+    if tar -xzkf "\$TMP_BUNDLE" -C "\$PROJECT_DIR/.claude" 2>/dev/null; then
+      :
+    else
+      # Fallback: BSD tar may error on -k when collisions exist; force extract
+      tar -xzf "\$TMP_BUNDLE" -C "\$PROJECT_DIR/.claude" 2>/dev/null || true
+    fi
+    rm -f "\$TMP_BUNDLE"
+    echo "    ✓ .claude/skills   (\$(ls "\$PROJECT_DIR/.claude/skills"   2>/dev/null | wc -l | tr -d ' ') entries)"
+    echo "    ✓ .claude/agents   (\$(ls "\$PROJECT_DIR/.claude/agents"   2>/dev/null | wc -l | tr -d ' ') entries)"
+    echo "    ✓ .claude/commands (\$(ls "\$PROJECT_DIR/.claude/commands" 2>/dev/null | wc -l | tr -d ' ') entries)"
+  else
+    rm -f "\$TMP_BUNDLE"
+    echo "    ✗ bundle (server did not return one — skipped)"
+  fi
+fi
 
 # Write server config (with token for memory bridge)
 if [ -n "\$RUFLO_TOKEN" ]; then
