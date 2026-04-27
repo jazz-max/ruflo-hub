@@ -18,20 +18,87 @@ function ts() {
   return new Date().toLocaleTimeString('ru-RU', { hour12: false });
 }
 
-// --- Connect to ruflo as MCP client via stdio ---
-console.log(`[${ts()}] Connecting to ruflo stdio...`);
+// --- Connect to ruflo as MCP client via stdio (auto-reconnect) ---
+//
+// `ruflo mcp start` runs as a stdio child process. If it exits or its stdin
+// pipe closes, the MCP client transport becomes "Not connected" and every
+// callTool() throws with that message. To survive that, we wrap the connect
+// step in a function and respawn the child when the transport reports close.
+const RECONNECT_BACKOFF_MS = [500, 1000, 2000, 5000, 5000, 5000];
+let client = null;
+let toolsResult = { tools: [] };
+let connectionState = 'connecting'; // 'connecting' | 'ready' | 'down'
+let reconnectAttempts = 0;
+let reconnectTimer = null;
 
-const stdioTransport = new StdioClientTransport({
-  command: 'ruflo',
-  args: ['mcp', 'start'],
-});
+async function connectToRuflo() {
+  connectionState = 'connecting';
+  console.log(`[${ts()}] Connecting to ruflo stdio (attempt ${reconnectAttempts + 1})...`);
 
-const client = new Client({ name: 'ruflo-proxy', version: '1.0.0' });
-await client.connect(stdioTransport);
+  const transport = new StdioClientTransport({
+    command: 'ruflo',
+    args: ['mcp', 'start'],
+  });
 
-// Cache tool list at startup
-const toolsResult = await client.listTools();
-console.log(`[${ts()}] Connected to ruflo: ${toolsResult.tools.length} tools`);
+  // Wire up close/error BEFORE connect so we don't miss an immediate failure.
+  transport.onclose = () => {
+    if (connectionState === 'down') return; // already scheduled
+    console.error(`[${ts()}] ruflo stdio transport closed — scheduling reconnect`);
+    connectionState = 'down';
+    scheduleReconnect();
+  };
+  transport.onerror = (err) => {
+    console.error(`[${ts()}] ruflo stdio transport error:`, err?.message || err);
+  };
+
+  const newClient = new Client({ name: 'ruflo-proxy', version: '1.0.0' });
+  await newClient.connect(transport);
+
+  // Refresh tool list every time we reconnect (ruflo could have updated).
+  const tools = await newClient.listTools();
+  client = newClient;
+  toolsResult = tools;
+  connectionState = 'ready';
+  reconnectAttempts = 0;
+  console.log(`[${ts()}] Connected to ruflo: ${tools.tools.length} tools`);
+}
+
+function scheduleReconnect() {
+  if (reconnectTimer) return;
+  const delay = RECONNECT_BACKOFF_MS[Math.min(reconnectAttempts, RECONNECT_BACKOFF_MS.length - 1)];
+  reconnectAttempts += 1;
+  reconnectTimer = setTimeout(async () => {
+    reconnectTimer = null;
+    try {
+      await connectToRuflo();
+    } catch (err) {
+      console.error(`[${ts()}] Reconnect failed:`, err?.message || err);
+      scheduleReconnect();
+    }
+  }, delay);
+}
+
+await connectToRuflo();
+
+// Call with one transparent retry if the stdio child just died.
+async function callToolReliably(name, args) {
+  try {
+    return await client.callTool({ name, arguments: args });
+  } catch (err) {
+    const msg = String(err?.message || err);
+    if (connectionState !== 'ready' || /Not connected|Connection closed/i.test(msg)) {
+      // Force a reconnect attempt right now and retry once.
+      try {
+        await connectToRuflo();
+        return await client.callTool({ name, arguments: args });
+      } catch (retryErr) {
+        scheduleReconnect();
+        throw retryErr;
+      }
+    }
+    throw err;
+  }
+}
 
 // --- Express app ---
 const app = express();
@@ -90,7 +157,7 @@ app.post('/mcp', async (req, res) => {
         const args = params?.arguments || {};
         console.log(`[${ts()}] ${name} ${JSON.stringify(args).slice(0, 200)}`);
 
-        const result = await client.callTool({ name, arguments: args });
+        const result = await callToolReliably(name, args);
         res.json(jsonrpc(id, result));
         return;
       }
@@ -114,13 +181,22 @@ app.delete('/mcp', (_req, res) => {
 });
 
 app.get('/health', (_req, res) => {
-  res.json({ status: 'ok', tools: toolsResult.tools.length });
+  if (connectionState === 'ready') {
+    res.json({ status: 'ok', tools: toolsResult.tools.length });
+  } else {
+    res.status(503).json({
+      status: 'unavailable',
+      reason: 'ruflo stdio transport down — reconnect in progress',
+      state: connectionState,
+      tools: toolsResult.tools.length,
+    });
+  }
 });
 
 // Call an MCP tool with a hard timeout. Returns null if the tool hangs or errors.
 function callToolWithTimeout(name, args, timeoutMs = 2000) {
   return Promise.race([
-    client.callTool({ name, arguments: args }).catch(() => null),
+    callToolReliably(name, args).catch(() => null),
     new Promise((resolve) => setTimeout(() => resolve(null), timeoutMs)),
   ]);
 }
