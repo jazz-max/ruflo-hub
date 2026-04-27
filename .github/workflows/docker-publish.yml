@@ -3,6 +3,7 @@ name: Build and Push Docker Image
 on:
   push:
     branches: [main]
+    tags: ['v*.*.*']
   schedule:
     # Еженедельно в понедельник 6:00 UTC — подхватывает свежую версию ruflo
     - cron: '0 6 * * 1'
@@ -21,11 +22,26 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
+      # docker/metadata-action раскладывает теги по правилам ниже:
+      # - push в main          → :latest, :<sha>
+      # - push tag vX.Y.Z      → :X.Y.Z, :X.Y, :X, :<sha>  (latest при tag-event НЕ обновляется,
+      #                          чтобы пин-теги не съезжали на dev-коммит между релизами)
+      # - schedule/dispatch    → :latest, :<sha>
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: jazzmax/ruflo-hub
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
+            type=sha,format=long,prefix=
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
+
       - uses: docker/build-push-action@v6
         with:
           context: .
           push: true
           no-cache: true
-          tags: |
-            jazzmax/ruflo-hub:latest
-            jazzmax/ruflo-hub:${{ github.sha }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}

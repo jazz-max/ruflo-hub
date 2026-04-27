@@ -478,8 +478,31 @@ docker restart <ruflo-container>
 ## Docker Hub
 
 ```bash
-docker pull jazzmax/ruflo-hub:latest
+docker pull jazzmax/ruflo-hub:latest      # rolling: каждый push в main
+docker pull jazzmax/ruflo-hub:1            # major: последний 1.x.x
+docker pull jazzmax/ruflo-hub:1.1          # minor: последний 1.1.x
+docker pull jazzmax/ruflo-hub:1.1.0        # точная версия
+docker pull jazzmax/ruflo-hub:<git-sha>    # любой коммит, для трассировки/отката
 ```
+
+Версионные теги публикуются при пуше git-тега `vX.Y.Z` (см. Процесс релиза). `:latest` обновляется только на push в `main` и при еженедельной пересборке — никогда не двигается при tag-пуше, поэтому пин на `:1`/`:1.1` остаётся стабильным между patch-релизами.
+
+## Процесс релиза
+
+Версии — [SemVer](https://semver.org/lang/ru/). Заметные изменения фиксируются в [`CHANGELOG.md`](../../CHANGELOG.md).
+
+```bash
+# 1. Обновить CHANGELOG.md и поднять версию в package.json (например 1.1.0 → 1.2.0)
+# 2. Закоммитить
+git commit -am "chore: release v1.2.0"
+git push origin main
+
+# 3. Поставить тег на релизный коммит и запушить
+git tag v1.2.0
+git push origin v1.2.0
+```
+
+Тег `v*.*.*` триггерит GitHub Actions, который публикует `jazzmax/ruflo-hub:1.2.0`, `:1.2`, `:1` и `:<sha>` в Docker Hub.
 
 ## Сборка из исходников
 

@@ -480,8 +480,31 @@ docker restart <ruflo-container>
 ## Docker Hub
 
 ```bash
-docker pull jazzmax/ruflo-hub:latest
+docker pull jazzmax/ruflo-hub:latest      # rolling: every push to main
+docker pull jazzmax/ruflo-hub:1            # major: latest 1.x.x
+docker pull jazzmax/ruflo-hub:1.1          # minor: latest 1.1.x
+docker pull jazzmax/ruflo-hub:1.1.0        # exact pin
+docker pull jazzmax/ruflo-hub:<git-sha>    # any commit, for trace/rollback
 ```
+
+Versioned tags are published when you push a `vX.Y.Z` git tag (see Release process). `:latest` only moves on `main` pushes / weekly rebuilds — never on tag pushes — so pinning to `:1`/`:1.1` stays stable through patch releases.
+
+## Release process
+
+Versions follow [SemVer](https://semver.org/). Notable changes are recorded in [`CHANGELOG.md`](CHANGELOG.md).
+
+```bash
+# 1. Update CHANGELOG.md and bump package.json version (e.g. 1.1.0 → 1.2.0)
+# 2. Commit
+git commit -am "chore: release v1.2.0"
+git push origin main
+
+# 3. Tag the release commit and push
+git tag v1.2.0
+git push origin v1.2.0
+```
+
+The `v*.*.*` tag triggers GitHub Actions to publish `jazzmax/ruflo-hub:1.2.0`, `:1.2`, `:1`, and `:<sha>` to Docker Hub.
 
 ## Build from source
 
