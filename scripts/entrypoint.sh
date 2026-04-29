@@ -53,6 +53,34 @@ mkdir -p /app/.claude-flow/memory
 [ -f /app/.claude-flow/memory/.migrated-to-sqlite ] || echo "{\"migratedAt\":\"$(date -u +%Y-%m-%dT%H:%M:%S.000Z)\",\"version\":\"3.0.0\"}" > /app/.claude-flow/memory/.migrated-to-sqlite
 [ -f /app/.claude-flow/config.json ] || echo '{}' > /app/.claude-flow/config.json
 
+# Warn loudly if /app/.swarm or /app/.claude-flow is NOT a mount point.
+# The real memory store lives at /app/.swarm/memory.db, and a missing volume
+# means the next `docker compose up -d` will silently wipe everything.
+mkdir -p /app/.swarm
+for path in /app/.swarm /app/.claude-flow; do
+  if ! mountpoint -q "$path" 2>/dev/null; then
+    echo "" >&2
+    echo "============================================================" >&2
+    echo "WARNING: $path is NOT mounted from a Docker volume." >&2
+    echo "Memory written to $path will live inside the container's R/W" >&2
+    echo "layer and WILL BE LOST on the next \`docker compose up -d\`." >&2
+    echo "" >&2
+    echo "Fix: add to your docker-compose.yml:" >&2
+    echo "  services:" >&2
+    echo "    ruflo:" >&2
+    echo "      volumes:" >&2
+    echo "        - ruflo-memory:/app/.swarm" >&2
+    echo "        - ruflo-state:/app/.claude-flow" >&2
+    echo "  volumes:" >&2
+    echo "    ruflo-memory:" >&2
+    echo "    ruflo-state:" >&2
+    echo "" >&2
+    echo "See README \"Memory persistence\" for the migration procedure." >&2
+    echo "============================================================" >&2
+    echo "" >&2
+  fi
+done
+
 # MCP proxy: Express + Streamable HTTP wrapping ruflo stdio
 echo "Starting Ruflo MCP proxy on port ${RUFLO_PORT}..."
 exec node /app/server.mjs

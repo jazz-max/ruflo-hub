@@ -6,6 +6,15 @@
 
 ## [Unreleased]
 
+## [1.1.1] — 2026-04-29
+
+### Fixed
+- **Документация: пропущенные volumes в примерах встраивания.** Все три варианта в README (en + ru) монтировали только `ruflo-pgdata`, без `ruflo-memory:/app/.swarm` и `ruflo-state:/app/.claude-flow`. Из-за этого при `docker compose pull && up -d` контейнер пересоздавался и terять `memory.db`. Добавлены volume mappings во все варианты + крупный WARNING-блок в начале раздела «Embedding as a service».
+- Раздел [Migrating an existing deployment to volumes](README.md#migrating-an-existing-deployment-to-volumes) — пошаговый план миграции живых данных в named volume без потерь, для тех кто уже задеплоил без volumes.
+
+### Added
+- **Runtime-warning в `entrypoint.sh`**: проверяет через `mountpoint -q`, что `/app/.swarm` и `/app/.claude-flow` примонтированы из volume. Если нет — крупный блок в `stderr` контейнера с точной YAML-вставкой для compose. Работает на каждом старте.
+
 ## [1.1.0] — 2026-04-27
 
 ### Added
@@ -39,6 +48,7 @@
 - CI: GitHub Actions собирает образ на каждый push в `main` и еженедельно (Mon 6:00 UTC), пушит `latest` + `<sha>` в Docker Hub.
 - Двуязычная документация (en + ru).
 
-[Unreleased]: https://github.com/jazz-max/ruflo-hub/compare/v1.1.0...HEAD
+[Unreleased]: https://github.com/jazz-max/ruflo-hub/compare/v1.1.1...HEAD
+[1.1.1]: https://github.com/jazz-max/ruflo-hub/compare/v1.1.0...v1.1.1
 [1.1.0]: https://github.com/jazz-max/ruflo-hub/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/jazz-max/ruflo-hub/releases/tag/v1.0.0

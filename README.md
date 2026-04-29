@@ -46,6 +46,28 @@ Server: `http://localhost:3000/mcp`
 
 The `jazzmax/ruflo-hub` image can be added to any existing `docker-compose.yml`.
 
+> ### ⚠ Memory persistence — read this before deploying
+>
+> The active memory store (`/app/.swarm/memory.db`, sql.js + HNSW) lives **inside the container's filesystem by default**. If you run `docker compose pull && up -d` (or otherwise recreate the container) without a named volume mounted at `/app/.swarm`, **your entire memory is wiped**. PostgreSQL is *not* a substitute — it's an optional archive used only by `ruflo ruvector import/export`.
+>
+> Always declare the memory volumes **before the first `docker compose up -d`**:
+>
+> ```yaml
+> services:
+>   ruflo:
+>     # ...
+>     volumes:
+>       - ruflo-memory:/app/.swarm        # memory.db + WAL + stderr log
+>       - ruflo-state:/app/.claude-flow   # config + system_health stubs
+>
+> volumes:
+>   ruflo-pgdata:
+>   ruflo-memory:
+>   ruflo-state:
+> ```
+>
+> All three examples below already include these volumes. If you are migrating an *existing* deployment that has no volume on `/app/.swarm`, see [Migrating an existing deployment to volumes](#migrating-an-existing-deployment-to-volumes) below — there is a procedure to copy live data into a new volume without losing it.
+
 ### Variant A: with your own PostgreSQL (pgvector)
 
 If your project doesn't yet have PostgreSQL with pgvector:
@@ -66,6 +88,9 @@ services:
       POSTGRES_DB: ruflo
       POSTGRES_USER: ruflo
       POSTGRES_PASSWORD: changeme
+    volumes:
+      - ruflo-memory:/app/.swarm
+      - ruflo-state:/app/.claude-flow
     depends_on:
       ruflo-db:
         condition: service_healthy
@@ -87,6 +112,8 @@ services:
 
 volumes:
   ruflo-pgdata:
+  ruflo-memory:
+  ruflo-state:
 ```
 
 ### Variant B: connect to an existing PostgreSQL
@@ -112,9 +139,16 @@ services:
       POSTGRES_DB: ruflo             # a separate database for ruflo
       POSTGRES_USER: ruflo
       POSTGRES_PASSWORD: changeme
+    volumes:
+      - ruflo-memory:/app/.swarm
+      - ruflo-state:/app/.claude-flow
     depends_on:
       postgres:
         condition: service_healthy
+
+volumes:
+  ruflo-memory:
+  ruflo-state:
 ```
 
 > PostgreSQL must have the pgvector extension. The `pgvector/pgvector:pg17` image ships with it.
@@ -136,6 +170,13 @@ services:
       POSTGRES_DB: ruflo
       POSTGRES_USER: ruflo
       POSTGRES_PASSWORD: changeme
+    volumes:
+      - ruflo-memory:/app/.swarm
+      - ruflo-state:/app/.claude-flow
+
+volumes:
+  ruflo-memory:
+  ruflo-state:
 ```
 
 ### Healthcheck
@@ -444,6 +485,45 @@ docker run --rm -v ruflo-server_ruflo-memory:/d -v "$PWD":/b alpine \
 # Optional — PostgreSQL dump (only if you actively use ruvector import/export)
 docker exec <postgres-container> pg_dump -U ruflo ruflo > backup.sql
 cat backup.sql | docker exec -i <postgres-container> psql -U ruflo ruflo
+```
+
+### Migrating an existing deployment to volumes
+
+If you deployed ruflo-hub before adding the `ruflo-memory` / `ruflo-state` volumes, your `/app/.swarm/memory.db` lives inside the container's R/W layer and **the next `docker compose up -d` will erase it**. Migrate live data into a named volume *before* recreating the container.
+
+Run this on the host where ruflo-hub lives. Replace `<service>` with your project name (e.g. `ruflo-hub`) — Compose prefixes volume names with it.
+
+```bash
+cd /path/to/ruflo-hub
+SNAP=/tmp/ruflo-snap-$(date +%s)
+mkdir -p $SNAP/swarm $SNAP/claude-flow
+
+# 1. Snapshot live data while the container is still running (small dataset)
+docker cp ruflo:/app/.swarm/. $SNAP/swarm/
+docker cp ruflo:/app/.claude-flow/. $SNAP/claude-flow/
+
+# 2. Graceful stop so SQLite checkpoints the WAL, then take a final snapshot
+docker compose stop ruflo
+docker cp ruflo:/app/.swarm/. $SNAP/swarm/
+docker cp ruflo:/app/.claude-flow/. $SNAP/claude-flow/
+
+# 3. Create the named volumes and load the snapshot
+docker volume create <service>_ruflo-memory
+docker volume create <service>_ruflo-state
+docker run --rm -v <service>_ruflo-memory:/dst -v $SNAP/swarm:/src alpine \
+  sh -c "rm -rf /dst/* && cp -a /src/. /dst/"
+docker run --rm -v <service>_ruflo-state:/dst -v $SNAP/claude-flow:/src alpine \
+  sh -c "rm -rf /dst/* && cp -a /src/. /dst/"
+
+# 4. Add the volume mappings to docker-compose.yml (see the warning above for the
+#    exact YAML), then recreate the container
+docker compose up -d ruflo
+
+# 5. Verify
+docker inspect ruflo --format '{{range .Mounts}}{{.Type}} {{.Source}} -> {{.Destination}}{{println}}{{end}}'
+curl -s http://localhost:3000/health  # state should be "ready"
+
+# 6. Keep $SNAP for a few days as a safety net before deleting
 ```
 
 ## Operational notes
