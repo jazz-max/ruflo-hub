@@ -8,6 +8,18 @@ Russian version: [`docs/ru/CHANGELOG.md`](docs/ru/CHANGELOG.md).
 
 ## [Unreleased]
 
+## [1.2.0] — 2026-06-19
+
+### Added
+- **RSS watchdog for the `ruflo mcp start` child in `server.mjs`** — containment for a load-correlated memory leak in upstream claude-flow. Diagnosis (see [`LEAK-INVESTIGATION-HANDOFF.md`](LEAK-INVESTIGATION-HANDOFF.md)): the leak is **not** in our proxy and **not** in the V8 JS heap. `process.memoryUsage()` on the live child showed `heapTotal ≈ 24 MB` (flat) but `external ≈ 1.3 GB` / `arrayBuffers ≈ 1.1 GB` and climbing — native buffers (embeddings / HNSW / result buffers) accumulating per tool call, ~160 MB/h under load. `memory.db` on disk is only 11 MB, so it is leaked buffers, not the DB image.
+  - The watchdog samples the child's RSS from `/proc/<pid>/status` (via the SDK's `transport.pid`) every `RUFLO_WATCHDOG_INTERVAL_MS` (default 60 s). When RSS crosses `RUFLO_CHILD_MAX_RSS_MB` it flags a respawn and carries it out **once the child is idle** (`inFlight === 0`), reusing `connectToRuflo()` — which kills the old child before spawning a fresh one, dropping all leaked native memory at once. If traffic never lets it idle within `RUFLO_RESPAWN_IDLE_TIMEOUT_MS` (default 30 s), the respawn is forced (in-flight calls are covered by `callToolReliably`'s transparent retry).
+  - `RUFLO_CHILD_MAX_RSS_MB=0` disables the watchdog. Defaults wired in compose: `2500` for `ruflo-my` (4 GB cap), `3000` for `ruflo` (8 GB cap) — both below the cgroup `mem_limit`, so the watchdog acts before the OOM backstop.
+  - `/health` gained `childRssMB`, `childMaxRssMB`, `childRespawnCount`, `lastChildRespawnAt`, `lastChildRespawnRssMB`, `inFlight`. `lastReconnectReason` can now be `rss-threshold`.
+  - Verified end-to-end against a live container (low test threshold): respawn fires on threshold, serves tools after respawn, and the child process count stays at exactly 1 across cycles — no orphan accumulation (the single-flight reconnect from 1.1.2 holds).
+
+### Notes
+- **Not fixed: the root cause.** `ruflo@3.12.4` (latest at release time) is byte-identical to `3.12.3` except `package.json` (version bump + new `agentic-flow` dep), so pinning a newer `ruflo` does not help. `--max-old-space-size` is useless here because the leak is native (`arrayBuffers`/`external`), not the V8 old space. The real fix belongs upstream in `ruvnet/ruflo`; this release only bounds the symptom.
+
 ## [1.1.2] — 2026-05-01
 
 ### Fixed

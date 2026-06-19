@@ -14,6 +14,25 @@ const BUNDLE_DIR = join(__dirname, 'skills-bundle');
 const PORT = parseInt(process.env.RUFLO_PORT || '3000', 10);
 const TOKEN = process.env.MCP_AUTH_TOKEN || '';
 
+// --- Child RSS watchdog (containment for the upstream claude-flow memory leak) ---
+//
+// `ruflo mcp start` (claude-flow) leaks native memory (ArrayBuffers / external,
+// NOT the V8 JS heap) proportional to the number of MCP tool calls — measured
+// ~160 МБ/час under load, unbounded. Root cause is upstream (ruvnet/ruflo); see
+// LEAK-INVESTIGATION-HANDOFF.md. Until that's fixed, we bound it here: when the
+// child's RSS crosses a threshold, gracefully respawn it once it's idle (no
+// in-flight tool calls), reusing connectToRuflo() which already kills the old
+// child before spawning a new one. A respawn drops all leaked buffers at once.
+//
+// 0 disables the watchdog entirely.
+const CHILD_MAX_RSS_MB = parseInt(process.env.RUFLO_CHILD_MAX_RSS_MB || '1500', 10);
+// How often to sample the child's RSS.
+const WATCHDOG_INTERVAL_MS = parseInt(process.env.RUFLO_WATCHDOG_INTERVAL_MS || '60000', 10);
+// Once over threshold we wait for idle, but not forever — if traffic never lets
+// the child go idle within this window, force the respawn anyway (in-flight
+// calls are covered by callToolReliably's transparent retry).
+const RESPAWN_IDLE_TIMEOUT_MS = parseInt(process.env.RUFLO_RESPAWN_IDLE_TIMEOUT_MS || '30000', 10);
+
 function ts() {
   return new Date().toLocaleTimeString('ru-RU', { hour12: false });
 }
@@ -38,14 +57,24 @@ let reconnectTimer = null;
 let connectingPromise = null;
 let currentTransport = null;
 
+// Watchdog state. inFlight counts tool calls currently awaiting the child so we
+// can respawn only when idle. respawnPendingSince marks when the RSS threshold
+// was first crossed (for the idle-wait timeout).
+let inFlight = 0;
+let respawnPendingSince = null;
+let respawning = false;
+
 // Persistent stats so /health can show whether reconnects have been happening.
 const stats = {
   startedAt: new Date().toISOString(),
   reconnectCount: 0,         // successful reconnects (excluding initial start)
   reconnectFailures: 0,      // failed attempts since last successful connect
   lastReconnectAt: null,
-  lastReconnectReason: null, // 'transport-close' | 'callTool-failure' | 'startup'
+  lastReconnectReason: null, // 'transport-close' | 'callTool-failure' | 'startup' | 'rss-threshold'
   currentConnectedSince: null,
+  childRespawnCount: 0,        // respawns triggered by the RSS watchdog
+  lastChildRespawnAt: null,
+  lastChildRespawnRssMB: null, // child RSS at the moment of the last watchdog respawn
 };
 
 // Persistent stderr log of the ruflo child — survives container restarts via
@@ -158,9 +187,11 @@ function scheduleReconnect(reason) {
 }
 
 await connectToRuflo('startup');
+startRssWatchdog();
 
 // Call with one transparent retry if the stdio child just died.
 async function callToolReliably(name, args) {
+  inFlight += 1;
   try {
     return await client.callTool({ name, arguments: args });
   } catch (err) {
@@ -176,7 +207,85 @@ async function callToolReliably(name, args) {
       }
     }
     throw err;
+  } finally {
+    inFlight -= 1;
+    // If the watchdog asked for a respawn and we just went idle, do it now.
+    if (inFlight === 0 && respawnPendingSince !== null && !respawning) {
+      maybeRespawnChild('idle');
+    }
   }
+}
+
+// --- RSS watchdog ---
+
+// Read the child's resident set size (MB) from /proc. The child runs in the same
+// PID namespace as this proxy (we spawned it), so its pid maps directly.
+function readChildRssMb() {
+  const pid = currentTransport?.pid;
+  if (!pid) return null;
+  try {
+    const status = readFileSync(`/proc/${pid}/status`, 'utf-8');
+    const m = status.match(/VmRSS:\s+(\d+)\s+kB/);
+    return m ? Math.round(parseInt(m[1], 10) / 1024) : null;
+  } catch {
+    return null; // not Linux / proc unavailable / child gone — skip silently
+  }
+}
+
+// Respawn the leaking child by reconnecting (connectToRuflo kills the old child
+// before spawning a fresh one, dropping all its leaked native buffers).
+async function maybeRespawnChild(trigger) {
+  if (respawning || connectingPromise) return;
+  respawning = true;
+  const rssMB = readChildRssMb();
+  const msg = `[${ts()}] RSS watchdog: respawning ruflo child (trigger: ${trigger}, RSS: ${rssMB ?? '?'} МБ > ${CHILD_MAX_RSS_MB} МБ)`;
+  console.warn(msg);
+  if (stderrLog) stderrLog.write(`\n--- ${msg} ---\n`);
+  try {
+    await connectToRuflo('rss-threshold');
+    stats.childRespawnCount += 1;
+    stats.lastChildRespawnAt = new Date().toISOString();
+    stats.lastChildRespawnRssMB = rssMB;
+  } catch (err) {
+    console.error(`[${ts()}] RSS watchdog respawn failed:`, err?.message || err);
+    scheduleReconnect('rss-threshold');
+  } finally {
+    respawnPendingSince = null;
+    respawning = false;
+  }
+}
+
+// Periodic check: if the child's RSS crosses the threshold, flag a respawn and
+// carry it out once the child is idle (inFlight === 0). If traffic never lets it
+// go idle within RESPAWN_IDLE_TIMEOUT_MS, force the respawn anyway.
+function startRssWatchdog() {
+  if (CHILD_MAX_RSS_MB <= 0) {
+    console.log(`[${ts()}] RSS watchdog disabled (RUFLO_CHILD_MAX_RSS_MB=0)`);
+    return;
+  }
+  console.log(`[${ts()}] RSS watchdog: threshold ${CHILD_MAX_RSS_MB} МБ, interval ${WATCHDOG_INTERVAL_MS} ms`);
+  setInterval(() => {
+    if (respawning || connectingPromise) return;
+    const rssMB = readChildRssMb();
+    if (rssMB === null) return;
+
+    if (rssMB > CHILD_MAX_RSS_MB) {
+      if (respawnPendingSince === null) {
+        respawnPendingSince = Date.now();
+        console.warn(`[${ts()}] RSS watchdog: child at ${rssMB} МБ > ${CHILD_MAX_RSS_MB} МБ — respawn pending (waiting for idle)`);
+      }
+      const waited = Date.now() - respawnPendingSince;
+      if (inFlight === 0) {
+        maybeRespawnChild('idle');
+      } else if (waited >= RESPAWN_IDLE_TIMEOUT_MS) {
+        console.warn(`[${ts()}] RSS watchdog: idle wait exceeded ${RESPAWN_IDLE_TIMEOUT_MS} ms (inFlight=${inFlight}) — forcing respawn`);
+        maybeRespawnChild('idle-timeout');
+      }
+    } else if (respawnPendingSince !== null && rssMB <= CHILD_MAX_RSS_MB) {
+      // RSS dropped back on its own (e.g. an external reconnect happened).
+      respawnPendingSince = null;
+    }
+  }, WATCHDOG_INTERVAL_MS).unref();
 }
 
 // --- Express app ---
@@ -270,6 +379,12 @@ app.get('/health', (_req, res) => {
     reconnectFailures: stats.reconnectFailures,
     lastReconnectAt: stats.lastReconnectAt,
     lastReconnectReason: stats.lastReconnectReason,
+    childRssMB: readChildRssMb(),
+    childMaxRssMB: CHILD_MAX_RSS_MB,
+    childRespawnCount: stats.childRespawnCount,
+    lastChildRespawnAt: stats.lastChildRespawnAt,
+    lastChildRespawnRssMB: stats.lastChildRespawnRssMB,
+    inFlight,
   };
   if (connectionState !== 'ready') {
     body.reason = 'ruflo stdio transport down — reconnect in progress';

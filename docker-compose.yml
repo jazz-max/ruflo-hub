@@ -10,6 +10,12 @@ services:
       - "${RUFLO_PORT:-3000}:${RUFLO_PORT:-3000}"
     environment:
       RUFLO_PORT: ${RUFLO_PORT:-3000}
+      # RSS-watchdog: грейсфул-респавн дочернего `ruflo mcp start`, когда его RSS
+      # превышает порог. Upstream claude-flow течёт нативной памятью (arrayBuffers/
+      # external, НЕ JS-heap) пропорционально числу tool-вызовов — см.
+      # LEAK-INVESTIGATION-HANDOFF.md. 0 отключает watchdog. На проде держать
+      # ниже cgroup mem_limit (8g), чтобы рестарт срабатывал раньше OOM.
+      RUFLO_CHILD_MAX_RSS_MB: ${RUFLO_CHILD_MAX_RSS_MB:-3000}
       POSTGRES_HOST: ruflo-db
       POSTGRES_PORT: 5432
       POSTGRES_DB: ${POSTGRES_DB:-ruflo}

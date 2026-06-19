@@ -6,6 +6,18 @@
 
 ## [Unreleased]
 
+## [1.2.0] — 2026-06-19
+
+### Added
+- **RSS-watchdog для дочернего `ruflo mcp start` в `server.mjs`** — containment для load-correlated утечки памяти в upstream claude-flow. Диагностика (см. [`LEAK-INVESTIGATION-HANDOFF.md`](../../LEAK-INVESTIGATION-HANDOFF.md)): течёт **не** наш proxy и **не** JS-heap V8. `process.memoryUsage()` живого child показал `heapTotal ≈ 24 МБ` (плоско), но `external ≈ 1.3 ГБ` / `arrayBuffers ≈ 1.1 ГБ` и растёт — нативные буферы (эмбеддинги / HNSW / буферы результатов) копятся на каждый tool-вызов, ~160 МБ/ч под нагрузкой. `memory.db` на диске всего 11 МБ, значит это утёкшие буферы, а не образ БД.
+  - Watchdog читает RSS child'а из `/proc/<pid>/status` (через `transport.pid` из SDK) раз в `RUFLO_WATCHDOG_INTERVAL_MS` (по умолчанию 60 с). При превышении `RUFLO_CHILD_MAX_RSS_MB` помечает респавн и выполняет его **как только child простаивает** (`inFlight === 0`), переиспользуя `connectToRuflo()` — тот убивает старого ребёнка перед спавном нового, разом сбрасывая утёкшую нативную память. Если трафик не даёт уйти в idle за `RUFLO_RESPAWN_IDLE_TIMEOUT_MS` (по умолчанию 30 с), респавн форсируется (запросы в полёте прикрыты прозрачным retry в `callToolReliably`).
+  - `RUFLO_CHILD_MAX_RSS_MB=0` отключает watchdog. Дефолты в compose: `2500` для `ruflo-my` (cap 4 ГБ), `3000` для `ruflo` (cap 8 ГБ) — оба ниже cgroup `mem_limit`, чтобы watchdog срабатывал раньше OOM-backstop.
+  - В `/health` добавлены `childRssMB`, `childMaxRssMB`, `childRespawnCount`, `lastChildRespawnAt`, `lastChildRespawnRssMB`, `inFlight`. `lastReconnectReason` теперь может быть `rss-threshold`.
+  - Проверено end-to-end на живом контейнере (заниженный тестовый порог): респавн срабатывает по порогу, после респавна tools отдаются, число процессов child остаётся ровно 1 между циклами — орфаны не копятся (single-flight reconnect из 1.1.2 держит).
+
+### Notes
+- **Не исправлено: корневая причина.** `ruflo@3.12.4` (latest на момент релиза) побайтово идентичен `3.12.3`, кроме `package.json` (бамп версии + новая зависимость `agentic-flow`), поэтому запинивание свежего `ruflo` не помогает. `--max-old-space-size` тут бесполезен — течёт нативщина (`arrayBuffers`/`external`), а не old-space V8. Корневой фикс — на стороне upstream `ruvnet/ruflo`; этот релиз лишь ограничивает симптом.
+
 ## [1.1.2] — 2026-05-01
 
 ### Fixed
