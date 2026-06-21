@@ -2,6 +2,8 @@
 
 How ruflo manages swarms and agents. Practical observations on ruflo@3.5.80 plus an explanation of what counts as what in the statusline and why it matters.
 
+> ⚠️ **Read this first.** ruflo's "swarm / hive-mind / agent orchestration" is **not real multi-agent execution** — they're coordination *records*, no processes get spawned (this doc explains exactly that, and independent audits confirm it). `ruflo-hub` does **not** rely on any of it; the project's actual value is the memory layer. This page is kept as an accurate description of how the swarm bookkeeping behaves, **not** as an endorsement of it as a working feature. See README → [What this actually is](../README.md#what-this-actually-is).
+
 ---
 
 ## Key concept: swarm and agent are records, not processes

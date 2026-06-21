@@ -1,6 +1,8 @@
 # Ruflo Hub — Docker
 
-A central MCP hub for your team: an HTTP wrapper around the Ruflo CLI (250+ tools), shared memory between Claude Code sessions, and a statusline backed by remote data. Active memory is local sql.js; PostgreSQL (pgvector) is an **optional** backup for `ruflo ruvector import/export`.
+A central MCP hub for your team: it takes the one genuinely-working part of the Ruflo CLI — its **memory layer** (real embeddings + HNSW + SQLite + auto-memory) — and makes it **shared and networked over HTTP**, so Claude Code sessions across a whole team share one persistent memory. A statusline backed by remote data comes along for free. Active memory is local sql.js; PostgreSQL (pgvector) is an **optional** backup for `ruflo ruvector import/export`.
+
+> **What this is, in one line:** the valuable, working ~1% of ruflo (memory) — extracted, made team-shareable, with the swarm/neural "theater" left out. See [What this actually is](#what-this-actually-is) before you judge it by ruflo's marketing.
 
 > 🇷🇺 Russian version: [docs/ru/README.md](docs/ru/README.md)
 
@@ -17,6 +19,20 @@ Ruflo MCP (stdio) → Express proxy (Streamable HTTP) → port 3000
                           ↕ (optional, manual commands)
                     PostgreSQL + pgvector (RuVector)  ← archive/bridge
 ```
+
+## What this actually is
+
+Be skeptical of ruflo's marketing — and so are we. Independent audits (and our own teardown) show that **most of ruflo's 300+ "MCP tools" are non-functional stubs**: `agent_spawn` just writes a Map entry, `swarm_init` leaves `agentCount: 0`, "hive-mind" is a `claude` subprocess with a role-play prompt, `neural_train` returns `Math.random()`. The 100+ "agents" are markdown. As an *agent-swarm orchestrator*, ruflo is largely theater.
+
+**One part is genuinely real, and it's the part we use:** the memory layer — real `all-MiniLM-L6-v2` embeddings, a real HNSW index, real SQLite persistence, plus the auto-memory hook. `ruflo-hub` is a thin wrapper that exposes **only that layer** over HTTP and bridges it into Claude Code. We don't ship the swarm/neural theater as a feature, and we don't load 300 stub tool-definitions into your context as a selling point.
+
+So judge this project as exactly one thing: **shared, networked, persistent memory for Claude Code** — not a swarm framework.
+
+### Honesty notes (memory & safety)
+
+- **The memory layer had a real leak.** sql.js's WASM in-memory filesystem (MEMFS) hoards one full DB image per database open — a prod instance grew to ~36 GB RSS over six weeks. We contain it with an **RSS watchdog** that gracefully respawns the child past a RAM threshold (`RUFLO_CHILD_MAX_RSS_MB`, default 3000) and patch the root cause at build time. Full heap-snapshot writeup: [`ruvnet/ruflo#2432`](https://github.com/ruvnet/ruflo/issues/2432).
+- **Security history (important):** ruflo [issue #1375](https://github.com/ruvnet/ruflo/issues/1375) reported a malicious obfuscated preinstall script and a hidden prompt-injection in MCP tool descriptions — **in old versions (3.1.0-alpha.55 – 3.5.2)**. Because this hub installs the package and serves tool descriptions to clients, we verified the version we ship (3.12.4): no preinstall scripts, and all 302 tool descriptions are clean. Treated as remediated in current versions — but **pin your version and verify yourself.**
+- **Backup is WAL-safe by volume.** `memory.db` is SQLite in WAL mode; the volume `tar` (below) captures `memory.db` + `-wal` + `-shm` together. Copying `memory.db` alone yields `database disk image is malformed`.
 
 ## Quick start
 
@@ -350,7 +366,7 @@ claude mcp add --transport http \
 }
 ```
 
-> An MCP connection gives you access to 250+ ruflo tools (memory, swarm, agents). Automatic setup via `/setup` additionally adds the **memory bridge** — pattern synchronization between Claude Code sessions.
+> An MCP connection exposes ruflo's tool surface, but in practice the tools worth calling are the **memory** ones (`memory_store`, `memory_search`, `memory_list`, …) — the swarm/neural/agent tools are mostly stubs (see [What this actually is](#what-this-actually-is)). Automatic setup via `/setup` additionally wires the **memory bridge** — pattern synchronization between Claude Code sessions.
 
 ## API endpoints
 
@@ -358,7 +374,7 @@ claude mcp add --transport http \
 |--------|-----|-------------|
 | POST | `/mcp` | JSON-RPC proxy to ruflo MCP (main endpoint) |
 | GET / DELETE | `/mcp` | Returns `405 Method Not Allowed` (MCP is POST-only) |
-| GET | `/health` | Server status (`{"status":"ok","tools":257}`) |
+| GET | `/health` | Server status (`{"status":"ok","tools":302, ...}`) — includes RSS-watchdog stats (`childRssMB`, `childRespawnCount`) |
 | GET | `/stats` | Statusline summary: vectors, namespaces, `dbSizeKB`, swarm state, intelligence score |
 | GET | `/setup` | Shell script for automatic project setup |
 | GET | `/update-bundle` | Shell script for bundle-only updates (skills+agents+commands) |

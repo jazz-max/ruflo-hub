@@ -8,6 +8,9 @@ Russian version: [`docs/ru/CHANGELOG.md`](docs/ru/CHANGELOG.md).
 
 ## [Unreleased]
 
+### Docs
+- **Honest repositioning of README + docs.** An independent audit ([r/ClaudeAI](https://www.reddit.com/r/ClaudeAI/comments/1sckiy8/)) showed most of ruflo's 300+ MCP tools are non-functional stubs; the genuinely-working part is the memory layer. README (en + ru) now leads with that: a new "What this actually is" section states what's real (memory: embeddings + HNSW + SQLite + auto-memory) vs theater (swarm/neural/agent stubs), and that `ruflo-hub` deliberately uses only the memory layer. Added honesty notes on the leak (#2432 + RSS watchdog), the #1375 security history (version-bounded to ≤3.5.2; verified clean in the shipped 3.12.4), and WAL-safe backups. Dropped "250+ tools" as a selling point; `/health` tool count corrected to 302. `docs/swarm-management.md` (en + ru) got a banner clarifying swarm/hive-mind are coordination records, not real execution, and the project doesn't rely on them.
+
 ## [1.2.1] — 2026-06-21
 
 ### Added
