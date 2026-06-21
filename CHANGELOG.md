@@ -8,6 +8,15 @@ Russian version: [`docs/ru/CHANGELOG.md`](docs/ru/CHANGELOG.md).
 
 ## [Unreleased]
 
+## [1.2.1] — 2026-06-21
+
+### Added
+- **Build-time root-cause patch for the leak** (`scripts/patch-sqljs-leak.cjs`, wired into the Dockerfile after `npm install -g ruflo`). A heap-snapshot retainer analysis pinned the leak: the sql.js Emscripten MEMFS accumulates `dbfile_<random>` files (one full `memory.db` image — 11 MB locally, 60 MB in prod — per database open), because `@claude-flow/memory`'s `createDatabase()` has no instance cache and re-loads the whole DB into a new `SQL.Database` per call; the discarded wrapper is GC'd but its MEMFS file is only freed by `db.close()`, which is never called. The patch wraps `createDatabase()` with a per-`(path|provider|dimensions)` promise cache so a single backend is opened once and reused — eliminating the repeated full-DB loads. Idempotent and best-effort: if upstream changes the file it logs a warning and the RSS watchdog (1.2.0) still contains the leak.
+- Filed upstream as [ruvnet/ruflo#2432](https://github.com/ruvnet/ruflo/issues/2432); full diagnosis in [`UPSTREAM-ISSUE-sqljs-memfs-leak.md`](UPSTREAM-ISSUE-sqljs-memfs-leak.md).
+
+### Verified
+- Patched image: `memory_store` / `memory_search` work (384-dim embeddings, `stored: true`) on a fresh DB; sql.js backend healthy, 302 tools. The patch does not alter DB bytes — a pre-existing `database disk image is malformed` on the (empty) local personal DB is unrelated corruption from earlier ungraceful child kills.
+
 ## [1.2.0] — 2026-06-19
 
 ### Added

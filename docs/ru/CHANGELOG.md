@@ -6,6 +6,15 @@
 
 ## [Unreleased]
 
+## [1.2.1] — 2026-06-21
+
+### Added
+- **Build-time патч корневой причины течи** (`scripts/patch-sqljs-leak.cjs`, встроен в Dockerfile после `npm install -g ruflo`). Анализ retainer-путей heap-снимка указал корень: in-memory ФС (MEMFS) sql.js накапливает файлы `dbfile_<random>` (по одному полному образу `memory.db` — 11 МБ локально, 60 МБ на проде — на каждое открытие БД), потому что `createDatabase()` в `@claude-flow/memory` не кэширует инстансы и перезагружает всю БД в новый `SQL.Database` на каждый вызов; отброшенная обёртка собирается GC, но её MEMFS-файл освобождает только `db.close()`, который не зовётся. Патч оборачивает `createDatabase()` promise-кэшем по `(path|provider|dimensions)` — один backend открывается один раз и переиспользуется, повторные полные загрузки БД исчезают. Идемпотентен и best-effort: если upstream изменит файл — пишет warning, а RSS-watchdog (1.2.0) всё равно держит течь.
+- Заведён upstream-issue [ruvnet/ruflo#2432](https://github.com/ruvnet/ruflo/issues/2432); полная диагностика — в [`UPSTREAM-ISSUE-sqljs-memfs-leak.md`](../../UPSTREAM-ISSUE-sqljs-memfs-leak.md).
+
+### Verified
+- Пропатченный образ: `memory_store` / `memory_search` работают (эмбеддинги 384-dim, `stored: true`) на свежей БД; sql.js-бэкенд здоров, 302 tools. Патч не меняет байты БД — предсуществующее `database disk image is malformed` на (пустой) локальной personal-БД — это повреждение от прежних негрейсфул-убийств child'а, не связанное с патчем.
+
 ## [1.2.0] — 2026-06-19
 
 ### Added

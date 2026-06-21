@@ -4,6 +4,14 @@ RUN apk add --no-cache curl bash postgresql-client tar gzip
 
 RUN npm install -g ruflo@latest pg
 
+# Build-time patch for the upstream claude-flow memory leak: cache sql.js backends
+# per path so createDatabase() stops re-loading the full memory.db into a new
+# sql.js Database per call (each leaks an N-MB dbfile_* in the Emscripten MEMFS).
+# Best-effort + idempotent; if upstream changes the file it warns and the RSS
+# watchdog in server.mjs still contains the leak. See UPSTREAM-ISSUE-sqljs-memfs-leak.md.
+COPY scripts/patch-sqljs-leak.cjs /tmp/patch-sqljs-leak.cjs
+RUN node /tmp/patch-sqljs-leak.cjs
+
 ENV RUFLO_PORT=3000
 ENV POSTGRES_HOST=localhost
 ENV POSTGRES_PORT=5432
