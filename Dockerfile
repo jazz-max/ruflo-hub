@@ -12,6 +12,17 @@ RUN npm install -g ruflo@latest pg
 COPY scripts/patch-sqljs-leak.cjs /tmp/patch-sqljs-leak.cjs
 RUN node /tmp/patch-sqljs-leak.cjs
 
+# Pre-bake the ONNX embeddings model (all-MiniLM-L6-v2, ~90MB) into the image so the
+# container starts WITHOUT a runtime HuggingFace download. A fresh/recreated container
+# otherwise re-downloads it on startup; on a flaky network it can't finish within the
+# 60s MCP connect timeout → server.mjs crash-loops indefinitely. Baking it = instant,
+# recreate-safe startup. The model caches under /root/.ruvector/models (HOME-based).
+RUN cd /tmp && timeout 360 sh -c \
+      'ruflo mcp start </dev/null >/tmp/warm.log 2>&1 & \
+       until [ -f /root/.ruvector/models/all-MiniLM-L6-v2/model.onnx ]; do sleep 2; done' ; \
+    test -f /root/.ruvector/models/all-MiniLM-L6-v2/model.onnx \
+      || { echo "MODEL BAKE FAILED — warm log:"; tail -20 /tmp/warm.log; exit 1; }
+
 ENV RUFLO_PORT=3000
 ENV POSTGRES_HOST=localhost
 ENV POSTGRES_PORT=5432

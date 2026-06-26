@@ -8,6 +8,14 @@ Russian version: [`docs/ru/CHANGELOG.md`](docs/ru/CHANGELOG.md).
 
 ## [Unreleased]
 
+## [1.3.0] — 2026-06-26
+
+### Fixed
+- **Upstream memory leak (#2432) resolved by ruflo 3.14.2.** ruvnet confirmed the real root cause is `@claude-flow/memory` `ControllerRegistry.initController()` replacing map entries without closing the prior controller (each re-init orphaned a `SqlJsRvfBackend`/`SQL.Database` → a `dbfile_*` in the sql.js MEMFS). Fixed in `@claude-flow/memory@3.0.0-alpha.21` (`closePriorController()` before `controllers.set()`). Building on `ruflo@latest` picks it up; the RSS watchdog (1.2.0) is now a harmless safety net rather than the primary defense. Note: the 1.2.1 `createDatabase` cache patch targeted the wrong layer (ruvnet confirmed `createDatabase` was fine) — kept as a harmless best-effort no-op.
+
+### Added
+- **Pre-bake the ONNX embeddings model into the image.** ruflo downloads `all-MiniLM-L6-v2` (~90 MB) from HuggingFace on first run, caching it under `/root/.ruvector/models` — a path that is NOT a volume, so every container recreate lost it and re-downloaded. On a flaky network the download couldn't finish within the 60 s MCP connect timeout, so `server.mjs` crash-looped (each restart killed the partial download). The Dockerfile now warms the model at build time so startup is instant and recreate-safe.
+
 ### Docs
 - **Honest repositioning of README + docs.** An independent audit ([r/ClaudeAI](https://www.reddit.com/r/ClaudeAI/comments/1sckiy8/)) showed most of ruflo's 300+ MCP tools are non-functional stubs; the genuinely-working part is the memory layer. README (en + ru) now leads with that: a new "What this actually is" section states what's real (memory: embeddings + HNSW + SQLite + auto-memory) vs theater (swarm/neural/agent stubs), and that `ruflo-hub` deliberately uses only the memory layer. Added honesty notes on the leak (#2432 + RSS watchdog), the #1375 security history (version-bounded to ≤3.5.2; verified clean in the shipped 3.12.4), and WAL-safe backups. Dropped "250+ tools" as a selling point; `/health` tool count corrected to 302. `docs/swarm-management.md` (en + ru) got a banner clarifying swarm/hive-mind are coordination records, not real execution, and the project doesn't rely on them.
 
