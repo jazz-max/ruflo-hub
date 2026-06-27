@@ -30,8 +30,8 @@ So judge this project as exactly one thing: **shared, networked, persistent memo
 
 ### Honesty notes (memory & safety)
 
-- **The memory layer had a real leak.** sql.js's WASM in-memory filesystem (MEMFS) hoards one full DB image per database open — a prod instance grew to ~36 GB RSS over six weeks. We contain it with an **RSS watchdog** that gracefully respawns the child past a RAM threshold (`RUFLO_CHILD_MAX_RSS_MB`, default 3000) and patch the root cause at build time. Full heap-snapshot writeup: [`ruvnet/ruflo#2432`](https://github.com/ruvnet/ruflo/issues/2432).
-- **Security history (important):** ruflo [issue #1375](https://github.com/ruvnet/ruflo/issues/1375) reported a malicious obfuscated preinstall script and a hidden prompt-injection in MCP tool descriptions — **in old versions (3.1.0-alpha.55 – 3.5.2)**. Because this hub installs the package and serves tool descriptions to clients, we verified the version we ship (3.12.4): no preinstall scripts, and all 302 tool descriptions are clean. Treated as remediated in current versions — but **pin your version and verify yourself.**
+- **The memory layer had a real leak — now fixed upstream.** sql.js's WASM in-memory filesystem (MEMFS) hoards one full DB image per database open — a prod instance grew to ~36 GB RSS over six weeks. The root cause (the controller registry replaced controllers without closing the prior instance, leaking its native/WASM resources) is fixed upstream in `@claude-flow/memory@3.0.0-alpha.21` (`closePriorIfAny`), shipped in ruflo 3.14.2 — which this hub ships as of v1.3.0. We keep the **RSS watchdog** (graceful child respawn past `RUFLO_CHILD_MAX_RSS_MB`, default 3000) as a backstop. Full heap-snapshot writeup: [`ruvnet/ruflo#2432`](https://github.com/ruvnet/ruflo/issues/2432).
+- **Security history (important):** ruflo [issue #1375](https://github.com/ruvnet/ruflo/issues/1375) reported a malicious obfuscated preinstall script and a hidden prompt-injection in MCP tool descriptions — **in old versions (3.1.0-alpha.55 – 3.5.2)**. Because this hub installs the package and serves tool descriptions to clients, we re-verified the version we ship (3.14.2): no `preinstall` hooks anywhere in the dependency tree; `install` scripts are standard native builds only (better-sqlite3/argon2/bcrypt) and the `postinstall` scripts (agentdb, `@claude-flow/cli`) are benign — no obfuscation, network, or eval; and all 305 tool descriptions scan clean (no hidden/bidi unicode, no instructions embedded for the assistant). Treated as remediated in current versions — but **pin your version and verify yourself.**
 - **Backup is WAL-safe by volume.** `memory.db` is SQLite in WAL mode; the volume `tar` (below) captures `memory.db` + `-wal` + `-shm` together. Copying `memory.db` alone yields `database disk image is malformed`.
 
 ## Quick start
@@ -374,7 +374,7 @@ claude mcp add --transport http \
 |--------|-----|-------------|
 | POST | `/mcp` | JSON-RPC proxy to ruflo MCP (main endpoint) |
 | GET / DELETE | `/mcp` | Returns `405 Method Not Allowed` (MCP is POST-only) |
-| GET | `/health` | Server status (`{"status":"ok","tools":302, ...}`) — includes RSS-watchdog stats (`childRssMB`, `childRespawnCount`) |
+| GET | `/health` | Server status (`{"status":"ok","tools":305, ...}`) — includes RSS-watchdog stats (`childRssMB`, `childRespawnCount`) |
 | GET | `/stats` | Statusline summary: vectors, namespaces, `dbSizeKB`, swarm state, intelligence score |
 | GET | `/setup` | Shell script for automatic project setup |
 | GET | `/update-bundle` | Shell script for bundle-only updates (skills+agents+commands) |

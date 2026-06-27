@@ -8,6 +8,9 @@ Russian version: [`docs/ru/CHANGELOG.md`](docs/ru/CHANGELOG.md).
 
 ## [Unreleased]
 
+### Docs
+- **Security & leak notes updated to the actually-shipped version (3.14.2).** v1.3.0 ships ruflo 3.14.2 (upstream leak fix #2432), but the README honesty notes still cited the previous `3.12.4` / `302 tools`. Re-verified 3.14.2 and updated README (en + ru): the leak note now credits the upstream root-cause fix (`closePriorIfAny` in `@claude-flow/memory@3.0.0-alpha.21`) with the RSS watchdog kept as a backstop; the security note was re-audited against the shipped tree — no `preinstall` hooks anywhere, `install` scripts are standard native builds only (better-sqlite3/argon2/bcrypt), the `postinstall` scripts (agentdb, `@claude-flow/cli`, protobufjs) are benign (read in full — no obfuscation/network/eval), and all **305** live tool descriptions scanned clean (0 hidden/bidi unicode; deterministic + 8-way adversarial semantic sweep found 0 injections); `/health` examples corrected to `tools: 305`.
+
 ## [1.3.0] — 2026-06-26
 
 ### Fixed
