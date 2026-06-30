@@ -451,7 +451,7 @@ function getHooksStatus() {
 // Returns { vectorCount, namespaces } or null if unavailable.
 function getRemoteAgentDBStats() {
   const cachePath = path.join(CWD, '.claude-flow', 'data', 'remote-stats-cache.json');
-  const CACHE_TTL_MS = 60 * 1000;
+  const CACHE_TTL_MS = 120 * 1000;
 
   const cache = readJSON(cachePath);
   if (cache && cache.ts && (Date.now() - cache.ts) < CACHE_TTL_MS) {
@@ -465,8 +465,12 @@ function getRemoteAgentDBStats() {
   if (baseUrl.endsWith('/mcp')) baseUrl = baseUrl.slice(0, -4);
   baseUrl = baseUrl.replace(/\/+$/, '');
 
-  const raw = safeExec(`curl -sS --max-time 1 "${baseUrl}/stats"`, 1500);
-  if (!raw) return null;
+  // Generous timeout: a remote hub over HTTPS pays a TLS handshake (~1.4s) plus the
+  // server's memory_stats wait (~0.7s) ≈ 2s, which blows a 1s budget every time and
+  // flashes Vectors 0 / 0KB. 4s covers it; the 120s cache means this runs at most
+  // ~once/2min. On failure we fall back to the last good cache rather than null (0/0).
+  const raw = safeExec(`curl -sS --max-time 4 "${baseUrl}/stats"`, 5000);
+  if (!raw) return (cache && cache.data) || null;
 
   try {
     const parsed = JSON.parse(raw);
@@ -498,7 +502,8 @@ function getRemoteAgentDBStats() {
     }
   } catch { /* ignore */ }
 
-  return null;
+  // Refresh failed/garbled — serve last good cache instead of dropping to 0/0.
+  return (cache && cache.data) || null;
 }
 
 // AgentDB stats — count real entries from all data stores
