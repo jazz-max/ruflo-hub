@@ -493,6 +493,13 @@ function getRemoteAgentDBStats() {
       if (data.dbSizeKB === 0 && data.vectorCount > 0 && cache && cache.data && cache.data.dbSizeKB > 0) {
         data.dbSizeKB = cache.data.dbSizeKB;
       }
+      // Symmetric guard: during a child respawn memory_stats is briefly unavailable,
+      // so /stats returns vectorCount 0 while dbSizeKB (read from files) is intact.
+      // Don't cache/flash 0 when the DB clearly has data — keep the last good count.
+      if (data.vectorCount === 0 && data.dbSizeKB > 0 && cache && cache.data && cache.data.vectorCount > 0) {
+        data.vectorCount = cache.data.vectorCount;
+        if (!data.namespaces) data.namespaces = cache.data.namespaces || 0;
+      }
       try {
         const dataDir = path.join(CWD, '.claude-flow', 'data');
         if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
