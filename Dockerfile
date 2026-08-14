@@ -25,10 +25,21 @@ RUN node /tmp/patch-sqljs-leak.cjs
 # otherwise re-downloads it on startup; on a flaky network it can't finish within the
 # 60s MCP connect timeout → server.mjs crash-loops indefinitely. Baking it = instant,
 # recreate-safe startup. The model caches under /root/.ruvector/models (HOME-based).
-RUN cd /tmp && timeout 360 sh -c \
-      'ruflo mcp start </dev/null >/tmp/warm.log 2>&1 & \
-       until [ -f /root/.ruvector/models/all-MiniLM-L6-v2/model.onnx ]; do sleep 2; done' ; \
-    test -f /root/.ruvector/models/all-MiniLM-L6-v2/model.onnx \
+#
+# The model is fetched LAZILY — on the first embedding request. `ruflo mcp start` alone
+# never fetches it: verified in a clean container, the server logs "Starting in stdio
+# mode", stays alive, and the model directory simply never appears. The previous bake
+# step waited 360 s for a download that startup does not trigger, which is why EVERY CI
+# build from 2026-07-06 on failed here with an empty warm log. Generating one embedding
+# through the product's own path pulls exactly what the runtime expects — verified
+# byte-identical to the last good image: model.onnx 90 405 214 B, tokenizer.json 466 247 B.
+RUN for attempt in 1 2 3; do \
+      timeout 420 ruflo embeddings generate -t warmup -o preview >/tmp/warm.log 2>&1; \
+      if [ -s /root/.ruvector/models/all-MiniLM-L6-v2/model.onnx ]; then break; fi; \
+      echo "model warmup attempt did not produce the model — retrying"; \
+      sleep 5; \
+    done; \
+    test -s /root/.ruvector/models/all-MiniLM-L6-v2/model.onnx \
       || { echo "MODEL BAKE FAILED — warm log:"; tail -20 /tmp/warm.log; exit 1; }
 
 ENV RUFLO_PORT=3000
