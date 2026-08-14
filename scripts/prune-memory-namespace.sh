@@ -44,6 +44,10 @@ CONTAINER=ruflo
 NAMESPACE=pattern
 BACKUP_ROOT="$(pwd)/backups"
 SQLITE_IMAGE=alpine:3.20
+# How to bring the service back up. `docker start` restarts the SAME container on
+# the SAME image; pass `--up-cmd "docker compose up -d"` when the point of the
+# window is also to move onto a freshly built image.
+UP_CMD=""
 APPLY=0
 
 while [ $# -gt 0 ]; do
@@ -52,6 +56,7 @@ while [ $# -gt 0 ]; do
     --namespace)    NAMESPACE="$2"; shift 2 ;;
     --backup-dir)   BACKUP_ROOT="$2"; shift 2 ;;
     --sqlite-image) SQLITE_IMAGE="$2"; shift 2 ;;
+    --up-cmd)       UP_CMD="$2"; shift 2 ;;
     --yes)          APPLY=1; shift ;;
     -h|--help)      sed -n '2,45p' "$0"; exit 0 ;;
     *) echo "unknown option: $1" >&2; exit 2 ;;
@@ -75,8 +80,10 @@ VOLUME="$(docker inspect "$CONTAINER" \
 [ -n "$VOLUME" ] || die "no volume mounted at /app/.swarm in $CONTAINER"
 
 # Helper: run sqlite3 against the live volume.
+# NB: `-i` is load-bearing — without it docker does not attach stdin, sqlite3 sees
+# EOF immediately and silently produces no output at all.
 sqlite_on_volume() {          # $1 = SQL
-  docker run --rm -v "$VOLUME":/data "$SQLITE_IMAGE" sh -c \
+  docker run --rm -i -v "$VOLUME":/data "$SQLITE_IMAGE" sh -c \
     'command -v sqlite3 >/dev/null 2>&1 || apk add --no-cache sqlite >/dev/null 2>&1 || {
        echo "sqlite3 unavailable in '"$SQLITE_IMAGE"' and apk add failed (offline?) — use --sqlite-image" >&2; exit 1; }
      exec sqlite3 /data/memory.db' <<SQL
@@ -85,8 +92,8 @@ SQL
 }
 
 # Helper: run sqlite3 against the backup copy (host path).
-sqlite_on_backup() {          # $1 = SQL
-  docker run --rm -v "$BACKUP_DIR":/backup "$SQLITE_IMAGE" sh -c \
+sqlite_on_backup() {          # $1 = SQL — `-i` required, see sqlite_on_volume
+  docker run --rm -i -v "$BACKUP_DIR":/backup "$SQLITE_IMAGE" sh -c \
     'command -v sqlite3 >/dev/null 2>&1 || apk add --no-cache sqlite >/dev/null 2>&1 || {
        echo "sqlite3 unavailable — use --sqlite-image" >&2; exit 1; }
      exec sqlite3 /backup/memory.db' <<SQL
@@ -139,11 +146,18 @@ sqlite_on_backup "
 .headers on
 PRAGMA journal_mode;
 SELECT namespace, COUNT(*) AS rows,
-       ROUND(SUM(LENGTH(COALESCE(content,'')))/1048576.0, 1) AS content_mb,
-       ROUND(SUM(LENGTH(COALESCE(embedding,'')))/1048576.0, 1) AS embedding_mb
+       ROUND(SUM(COALESCE(LENGTH(content),0))/1048576.0, 1) AS content_mb,
+       ROUND(SUM(COALESCE(LENGTH(embedding),0))/1048576.0, 1) AS embedding_mb
   FROM memory_entries GROUP BY namespace ORDER BY rows DESC;
-SELECT 'graph_edges' AS table_name, COUNT(*) AS rows FROM graph_edges;
 " || say "(count query failed — inspect $BACKUP_DIR manually before going further)"
+
+# Non-empty tables, so the report is not silently blind to anything else living
+# in this file. Kept separate: a missing table must not take the counts with it.
+say ""
+sqlite_on_backup "
+.mode list
+SELECT name FROM sqlite_master WHERE type='table' ORDER BY name;
+" 2>/dev/null | tr '\n' ' ' | fold -w 100 -s | sed 's/^/  tables: /' || true
 
 if [ "$APPLY" != 1 ]; then
   head_ "Report only — nothing changed"
@@ -193,17 +207,24 @@ sqlite_on_volume "
 SELECT namespace, COUNT(*) AS rows FROM memory_entries GROUP BY namespace ORDER BY rows DESC;
 " || true
 
-head_ "Starting $CONTAINER"
-docker start "$CONTAINER" >/dev/null
-PORT="$(docker inspect "$CONTAINER" --format \
-  '{{range $p, $c := .NetworkSettings.Ports}}{{range $c}}{{.HostPort}} {{end}}{{end}}' | awk '{print $1}')"
-for i in $(seq 1 30); do
-  if [ -n "$PORT" ] && curl -sf "http://127.0.0.1:$PORT/health" >/dev/null 2>&1; then
-    say "healthy on port $PORT after ${i}s"; break
+head_ "Starting the service"
+if [ -n "$UP_CMD" ]; then
+  say "\$ $UP_CMD"
+  sh -c "$UP_CMD" >/dev/null || die "up command failed — container is down, backup at $BACKUP_DIR"
+else
+  docker start "$CONTAINER" >/dev/null
+fi
+
+# Probe /health from INSIDE the container: prod publishes no host port (nginx
+# reaches it over a docker network), so a host-side curl would prove nothing.
+for i in $(seq 1 45); do
+  if docker exec "$CONTAINER" curl -sf "http://127.0.0.1:${RUFLO_PORT:-3000}/health" >/dev/null 2>&1; then
+    say "healthy after ${i}s"; break
   fi
   sleep 1
-  [ "$i" = 30 ] && say "WARNING: /health not ready after 30s — check 'docker logs $CONTAINER'"
+  [ "$i" = 45 ] && say "WARNING: /health not ready after 45s — check 'docker logs $CONTAINER'"
 done
+docker exec "$CONTAINER" curl -s "http://127.0.0.1:${RUFLO_PORT:-3000}/health" 2>/dev/null | head -c 600; echo
 
 docker exec "$CONTAINER" ls -la /app/.swarm/ || true
 

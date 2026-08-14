@@ -9,8 +9,25 @@ RUN apk add --no-cache curl bash postgresql-client tar gzip
 # An unplanned recreate would therefore take memory down completely.
 # 3.14.2 is the version production has been running; upgrade as a deliberate step
 # AFTER the WAL checkpoint + namespace cleanup, not as a side effect of a rebuild.
+#
+# PINNING THE WRAPPER IS NOT ENOUGH. `ruflo` declares its implementation as
+# "@claude-flow/cli": "^3.10.3" — a caret — so a fresh install floats it to the
+# newest 3.x (3.38.9 today) even when ruflo itself is pinned. That is not
+# cosmetic: 3.15+ moves the AgentDB bridge to a SEPARATE agentdb-memory.db
+# (#2786), so everything already stored in memory.db becomes invisible —
+# bridgeGetEntry returns a truthy {found:false} and never falls back. Observed in
+# production on 2026-08-14: a rebuild stranded 149 rows and the failure was
+# silent, reported as "no such key". So pin the implementation too, and assert it.
 ARG RUFLO_VERSION=3.14.2
-RUN npm install -g ruflo@${RUFLO_VERSION} pg
+ARG CLAUDE_FLOW_CLI_VERSION=3.14.2
+RUN npm install -g ruflo@${RUFLO_VERSION} pg \
+ && npm install --prefix /usr/local/lib/node_modules/ruflo @claude-flow/cli@${CLAUDE_FLOW_CLI_VERSION} \
+ && if ! grep -q "\"version\": \"${CLAUDE_FLOW_CLI_VERSION}\"" \
+        /usr/local/lib/node_modules/ruflo/node_modules/@claude-flow/cli/package.json; then \
+      echo "CLI PIN FAILED — @claude-flow/cli is not ${CLAUDE_FLOW_CLI_VERSION}:"; \
+      grep -m1 version /usr/local/lib/node_modules/ruflo/node_modules/@claude-flow/cli/package.json; \
+      exit 1; \
+    fi
 
 # Build-time patch for the upstream claude-flow memory leak: cache sql.js backends
 # per path so createDatabase() stops re-loading the full memory.db into a new
