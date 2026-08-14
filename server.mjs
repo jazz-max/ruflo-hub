@@ -1,7 +1,7 @@
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import express from 'express';
-import { readFileSync, existsSync, readdirSync, statSync, createWriteStream, mkdirSync } from 'fs';
+import { readFileSync, existsSync, readdirSync, statSync, createWriteStream, mkdirSync, readlinkSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { spawn } from 'child_process';
@@ -32,6 +32,23 @@ const WATCHDOG_INTERVAL_MS = parseInt(process.env.RUFLO_WATCHDOG_INTERVAL_MS || 
 // the child go idle within this window, force the respawn anyway (in-flight
 // calls are covered by callToolReliably's transparent retry).
 const RESPAWN_IDLE_TIMEOUT_MS = parseInt(process.env.RUFLO_RESPAWN_IDLE_TIMEOUT_MS || '30000', 10);
+
+// GET /stats used to probe `memory_stats` and `memory_list` for an entry count.
+// On the sql.js fallback path those are the two most expensive tools that exist:
+// each one runs ensureSchemaColumns() first, which rewrites the WHOLE database
+// image, and then materialises every row's embedding text (278 MB measured on a
+// 302 MB DB). With statusline clients polling /stats per session, that alone was
+// ~240 whole-image writes per hour. The 2 s client-side timeout below does NOT
+// cancel the work — the child runs it to completion regardless.
+//
+// So the count probes are opt-in now. `dbSizeKB` is computed from the files and
+// needs no MCP call, and statusline already tolerates vectorCount 0 alongside a
+// non-zero dbSizeKB (see 95d0ce7). Set RUFLO_STATS_MEMORY_PROBE=1 to restore
+// them — sensible only on a small memory.db.
+// See MEMORY-DB-BLOAT-INVESTIGATION.md.
+const STATS_MEMORY_PROBE = ['1', 'true', 'yes', 'on'].includes(
+  String(process.env.RUFLO_STATS_MEMORY_PROBE || '').toLowerCase()
+);
 
 function ts() {
   return new Date().toLocaleTimeString('ru-RU', { hour12: false });
@@ -89,6 +106,48 @@ try {
   console.error(`[${ts()}] Failed to open ${STDERR_LOG_PATH}:`, err?.message || err);
 }
 
+// Close the old stdio child and wait until its pid is actually gone, so a new
+// child never overlaps it on memory.db. SDK close() already escalates
+// stdin-end → SIGTERM → SIGKILL over ~4s but returns without confirming the
+// exit, so we verify via /proc and escalate once more if needed.
+const OLD_CHILD_EXIT_TIMEOUT_MS = parseInt(process.env.RUFLO_OLD_CHILD_EXIT_TIMEOUT_MS || '8000', 10);
+
+function pidAlive(pid) {
+  if (!pid) return false;
+  try {
+    return existsSync(`/proc/${pid}`);
+  } catch {
+    return false;
+  }
+}
+
+async function waitForChildExit(oldTransport) {
+  const pid = oldTransport?.pid;
+  const started = Date.now();
+  try {
+    await Promise.race([
+      Promise.resolve().then(() => oldTransport.close()).catch(() => {}),
+      new Promise((r) => setTimeout(r, OLD_CHILD_EXIT_TIMEOUT_MS).unref()),
+    ]);
+  } catch { /* best effort */ }
+
+  // On non-Linux (no /proc) pidAlive() is always false — nothing more to do.
+  while (pidAlive(pid) && Date.now() - started < OLD_CHILD_EXIT_TIMEOUT_MS) {
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  if (pidAlive(pid)) {
+    console.warn(`[${ts()}] old ruflo child ${pid} still alive after ${OLD_CHILD_EXIT_TIMEOUT_MS} ms — SIGKILL`);
+    try { process.kill(pid, 'SIGKILL'); } catch { /* already gone */ }
+    // Give the kernel a moment so the new child can't open memory.db alongside it.
+    for (let i = 0; i < 20 && pidAlive(pid); i += 1) {
+      await new Promise((r) => setTimeout(r, 50));
+    }
+  }
+  if (pid) {
+    console.log(`[${ts()}] old ruflo child ${pid} gone after ${Date.now() - started} ms`);
+  }
+}
+
 async function connectToRuflo(reason) {
   // Single-flight: если коннект уже в процессе, все параллельные вызовы
   // дожидаются того же промиса. Без этого callTool-failure от N параллельных
@@ -101,17 +160,33 @@ async function connectToRuflo(reason) {
       stderrLog.write(`\n--- [${new Date().toISOString()}] reconnect attempt ${reconnectAttempts + 1} (reason: ${reason}) ---\n`);
     }
 
-    // Прибиваем предыдущего ребёнка ДО спавна нового, чтобы не оставлять
-    // осиротевшие `ruflo mcp start` процессы. close() шлёт SIGTERM, ждёт 2с,
-    // затем SIGKILL — мы fire-and-forget, не блокируем реконнект.
+    // Прибиваем предыдущего ребёнка ДО спавна нового и ЖДЁМ его выхода.
+    //
+    // Раньше close() был fire-and-forget, и новый child спавнился сразу. Но SDK
+    // close() закрывает stdin, ждёт до 2с, шлёт SIGTERM, ждёт ещё 2с и только
+    // тогда SIGKILL — то есть старый `ruflo mcp start` живёт ещё несколько секунд
+    // после старта нового. А он держит НАТИВНОЕ WAL-соединение к memory.db
+    // (в ruflo 3.14.2 AgentDB-мост открывает сам memory.db через better-sqlite3;
+    // проверено на проде: child держит fd на memory.db, -wal и -shm). Два
+    // поколения на одном файле дают две беды:
+    //   1) DDL/schema-шаг нового child'а может получить SQLITE_BUSY от старого —
+    //      initAgentDB() это глотает, ставит agentdb = null и НЕ бросает, из-за
+    //      чего bridgeAvailable латчится в false на ВСЮ жизнь процесса: всё
+    //      поколение уходит на sql.js whole-image путь (10–21 с на операцию
+    //      вместо 1–10 мс). Это лучшее объяснение наблюдаемых «то летает, то
+    //      висит» — режим задаётся поколением, а не нагрузкой.
+    //   2) если старый child в этот момент делает whole-image запись
+    //      (db.export() + rename), она затирает нативно закоммиченные строки —
+    //      апстримный #2431 («database disk image is malformed»).
+    // Поэтому теперь: ждём выхода старого, проверяем по /proc, добиваем SIGKILL
+    // если он всё ещё жив, и только потом спавним нового.
+    // См. MEMORY-DB-BLOAT-INVESTIGATION.md.
     const oldTransport = currentTransport;
     currentTransport = null;
     if (oldTransport) {
       oldTransport.onclose = () => {}; // глушим — иначе триггернёт лишний reconnect
       oldTransport.onerror = () => {};
-      Promise.resolve()
-        .then(() => oldTransport.close())
-        .catch(() => { /* best effort */ });
+      await waitForChildExit(oldTransport);
     }
 
     const transport = new StdioClientTransport({
@@ -229,6 +304,39 @@ function readChildRssMb() {
     return m ? Math.round(parseInt(m[1], 10) / 1024) : null;
   } catch {
     return null; // not Linux / proc unavailable / child gone — skip silently
+  }
+}
+
+// Which memory regime is the current child in?
+//
+// In ruflo 3.14.2 the AgentDB bridge opens `memory.db` itself through native
+// better-sqlite3 and switches it to WAL. So a child that holds an fd on
+// `memory.db-wal` has a live native connection — memory operations cost
+// milliseconds. A child whose bridge init failed latches `bridgeAvailable=false`
+// for its whole lifetime and every operation falls back to the sql.js
+// whole-image path (~10-21 s on a 340 MB file). The two regimes look identical
+// from outside, which is why "ruflo is slow" has been so hard to pin down —
+// so surface it: `native` vs `fallback`.
+//
+// Caveat: graph-edge-writer also opens memory.db natively, so a WAL fd proves
+// "some native connection exists", which in practice tracks the bridge but is
+// not a formal proof of it. Returns null when /proc is unavailable.
+function childMemoryRegime() {
+  const pid = currentTransport?.pid;
+  if (!pid) return null;
+  try {
+    for (const fd of readdirSync(`/proc/${pid}/fd`)) {
+      let target;
+      try {
+        target = readlinkSync(`/proc/${pid}/fd/${fd}`);
+      } catch {
+        continue; // fd closed while we were looking
+      }
+      if (target.endsWith('/memory.db-wal')) return 'native';
+    }
+    return 'fallback';
+  } catch {
+    return null; // not Linux / child gone
   }
 }
 
@@ -381,6 +489,10 @@ app.get('/health', (_req, res) => {
     lastReconnectReason: stats.lastReconnectReason,
     childRssMB: readChildRssMb(),
     childMaxRssMB: CHILD_MAX_RSS_MB,
+    // 'native' = AgentDB bridge holds memory.db in WAL (memory ops ~ms);
+    // 'fallback' = bridge init failed for this child, every op rewrites the
+    // whole DB image (~10-21 s on a large file). null = /proc unavailable.
+    childMemoryRegime: childMemoryRegime(),
     childRespawnCount: stats.childRespawnCount,
     lastChildRespawnAt: stats.lastChildRespawnAt,
     lastChildRespawnRssMB: stats.lastChildRespawnRssMB,
@@ -440,27 +552,33 @@ app.get('/stats', async (_req, res) => {
     }
   } catch { /* dir missing — dbSizeKB stays 0 */ }
 
-  // Try memory_stats (2s timeout — if MCP stdio is busy, skip rather than block)
-  {
-    const result = await callToolWithTimeout('memory_stats', {}, 2000);
-    const text = result?.content?.[0]?.text || '';
-    const parsed = extractCount(text);
-    if (parsed) {
-      summary.vectorCount = parsed.count;
-      summary.namespaces = parsed.namespaces;
-      summary.source = 'memory_stats';
+  // Entry-count probes — opt-in, see STATS_MEMORY_PROBE above. Skipping them
+  // leaves vectorCount 0 with dbSizeKB intact, which statusline handles.
+  if (!STATS_MEMORY_PROBE) {
+    summary.source = 'skipped-memory-probe';
+  } else {
+    // memory_stats (2s timeout — if MCP stdio is busy, skip rather than block)
+    {
+      const result = await callToolWithTimeout('memory_stats', {}, 2000);
+      const text = result?.content?.[0]?.text || '';
+      const parsed = extractCount(text);
+      if (parsed) {
+        summary.vectorCount = parsed.count;
+        summary.namespaces = parsed.namespaces;
+        summary.source = 'memory_stats';
+      }
     }
-  }
 
-  // Fallback: memory_list
-  if (summary.vectorCount === 0) {
-    const result = await callToolWithTimeout('memory_list', {}, 2000);
-    const text = result?.content?.[0]?.text || '';
-    const parsed = extractCount(text);
-    if (parsed) {
-      summary.vectorCount = parsed.count;
-      if (!summary.namespaces) summary.namespaces = parsed.namespaces;
-      summary.source = summary.source === 'none' ? 'memory_list' : summary.source;
+    // Fallback: memory_list
+    if (summary.vectorCount === 0) {
+      const result = await callToolWithTimeout('memory_list', {}, 2000);
+      const text = result?.content?.[0]?.text || '';
+      const parsed = extractCount(text);
+      if (parsed) {
+        summary.vectorCount = parsed.count;
+        if (!summary.namespaces) summary.namespaces = parsed.namespaces;
+        summary.source = summary.source === 'none' ? 'memory_list' : summary.source;
+      }
     }
   }
 

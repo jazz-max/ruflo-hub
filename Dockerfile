@@ -2,7 +2,15 @@ FROM node:22-alpine
 
 RUN apk add --no-cache curl bash postgresql-client tar gzip
 
-RUN npm install -g ruflo@latest pg
+# ruflo is PINNED deliberately. Unpinned (`ruflo@latest`) the weekly CI rebuild
+# means any container recreate silently jumps versions — and 3.15+ added the
+# #2735 gate that REFUSES every memory operation while `-wal`/`-shm` sidecars sit
+# next to memory.db (they do on a live install, see MEMORY-DB-BLOAT-INVESTIGATION.md).
+# An unplanned recreate would therefore take memory down completely.
+# 3.14.2 is the version production has been running; upgrade as a deliberate step
+# AFTER the WAL checkpoint + namespace cleanup, not as a side effect of a rebuild.
+ARG RUFLO_VERSION=3.14.2
+RUN npm install -g ruflo@${RUFLO_VERSION} pg
 
 # Build-time patch for the upstream claude-flow memory leak: cache sql.js backends
 # per path so createDatabase() stops re-loading the full memory.db into a new

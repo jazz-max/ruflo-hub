@@ -565,9 +565,16 @@ docker build --no-cache -t jazzmax/ruflo-hub:latest .
 docker push jazzmax/ruflo-hub:latest
 ```
 
-**Обновление внутри контейнера (быстро, не переживёт рестарт):**
+> **Версия ruflo запинена** (`ARG RUFLO_VERSION` в Dockerfile, сейчас `3.14.2`).
+> Обновлять походя нельзя: с 3.15 **каждая операция памяти отказывает**, пока рядом с `memory.db`
+> лежат сайдкары `-wal`/`-shm` (гейт из #2735) — а создаёт их `graph-edge-writer` в той же версии.
+> Апгрейд — осознанный шаг после чистки namespace и после того, как заработает нативный
+> AgentDB-мост. См. `MEMORY-DB-BLOAT-INVESTIGATION.md`.
+> Собрать другую версию: `docker compose build --build-arg RUFLO_VERSION=3.x.y`
+
+**Обновление внутри контейнера (быстро, не переживёт рестарт — ничего не пинит, см. предупреждение выше):**
 ```bash
-docker exec <ruflo-container> npm install -g ruflo@latest
+docker exec <ruflo-container> npm install -g ruflo@3.14.2
 docker restart <ruflo-container>
 ```
 

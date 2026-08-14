@@ -567,9 +567,16 @@ docker build --no-cache -t jazzmax/ruflo-hub:latest .
 docker push jazzmax/ruflo-hub:latest
 ```
 
-**Update inside the container (fast, doesn't survive a restart):**
+> **The ruflo version is pinned** (`ARG RUFLO_VERSION` in the Dockerfile, currently `3.14.2`).
+> Do not upgrade casually: from 3.15 on, every memory operation **refuses** while `-wal`/`-shm`
+> sidecars sit next to `memory.db` (issue #2735 gate) — and `graph-edge-writer` in the same version
+> creates them. Upgrading is a deliberate step taken after the namespace cleanup and after the
+> native AgentDB bridge works. See `MEMORY-DB-BLOAT-INVESTIGATION.md`.
+> To build another version: `docker compose build --build-arg RUFLO_VERSION=3.x.y`
+
+**Update inside the container (fast, doesn't survive a restart — pins nothing, read the warning above):**
 ```bash
-docker exec <ruflo-container> npm install -g ruflo@latest
+docker exec <ruflo-container> npm install -g ruflo@3.14.2
 docker restart <ruflo-container>
 ```
 
