@@ -5,9 +5,25 @@ on:
     branches: [main]
     tags: ['v*.*.*']
   schedule:
-    # Еженедельно в понедельник 6:00 UTC — подхватывает свежую версию ruflo
+    # Еженедельно в понедельник 6:00 UTC — свежий базовый образ и системные патчи.
+    # Версия ruflo при этом НЕ меняется: она запинена в Dockerfile (ARG RUFLO_VERSION
+    # и ARG CLAUDE_FLOW_CLI_VERSION). См. MEMORY-DB-BLOAT-INVESTIGATION.md.
     - cron: '0 6 * * 1'
   workflow_dispatch: # ручной запуск из GitHub UI
+    inputs:
+      ruflo_version:
+        description: 'Версия ruflo (пусто — как в Dockerfile)'
+        required: false
+        default: ''
+      cli_version:
+        description: 'Версия @claude-flow/cli — реализации (пусто — как в Dockerfile)'
+        required: false
+        default: ''
+      candidate:
+        description: 'Собрать как :candidate вместо :latest (для проверки апгрейда)'
+        type: boolean
+        required: false
+        default: false
 
 jobs:
   build-and-push:
@@ -27,6 +43,11 @@ jobs:
       # - push tag vX.Y.Z      → :X.Y.Z, :X.Y, :X, :<sha>  (latest при tag-event НЕ обновляется,
       #                          чтобы пин-теги не съезжали на dev-коммит между релизами)
       # - schedule/dispatch    → :latest, :<sha>
+      # - dispatch c candidate=true → ТОЛЬКО :candidate; :latest не трогается, поэтому
+      #                          прод не может случайно подтянуть непроверенную версию
+      #                          (2026-08-14: пересборка увезла реализацию с 3.14.x на
+      #                          3.38.9 и данные в memory.db стали невидимы — с тех пор
+      #                          проверка новой версии идёт через отдельный тег)
       - id: meta
         uses: docker/metadata-action@v5
         with:
@@ -35,8 +56,9 @@ jobs:
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=semver,pattern={{major}}
-            type=sha,format=long,prefix=
-            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
+            type=sha,format=long,prefix=,enable=${{ inputs.candidate != true }}
+            type=raw,value=candidate,enable=${{ inputs.candidate == true }}
+            type=raw,value=latest,enable=${{ inputs.candidate != true && (github.ref == 'refs/heads/main' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') }}
 
       - uses: docker/build-push-action@v6
         with:
@@ -45,3 +67,7 @@ jobs:
           no-cache: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          # Пустое значение build-arg означает «оставить дефолт из Dockerfile».
+          build-args: |
+            ${{ inputs.ruflo_version && format('RUFLO_VERSION={0}', inputs.ruflo_version) || '' }}
+            ${{ inputs.cli_version && format('CLAUDE_FLOW_CLI_VERSION={0}', inputs.cli_version) || '' }}
