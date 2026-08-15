@@ -723,33 +723,56 @@ if [ ! -d "\$PROJECT_DIR" ]; then
 fi
 
 mkdir -p "\$PROJECT_DIR/.claude/helpers"
+FAILED=0
+
+# ── Hook helpers FIRST ────────────────────────────────────────────────────────
+# They are server-managed and are the whole point of this script; the bundle
+# below is optional. Previously the bundle was fetched first and a failure there
+# ran \`exit 1\` BEFORE the helpers were refreshed — so an unavailable optional
+# part silently blocked the mandatory one (reported from a 9-project rollout,
+# 2026-08-15).
+# Each file is downloaded to a temp path and moved into place only on success,
+# so a mid-transfer failure cannot truncate a working helper.
+for file in auto-memory-hook.mjs hook-handler.cjs intelligence-bridge.cjs statusline.cjs; do
+  TMP_HELPER="\$(mktemp -t ruflo-helper.XXXXXX)"
+  if curl -sf --retry 2 --retry-delay 1 "${baseUrl}/templates/\$file" -o "\$TMP_HELPER" \\
+     && [ -s "\$TMP_HELPER" ]; then
+    mv "\$TMP_HELPER" "\$PROJECT_DIR/.claude/helpers/\$file"
+    echo "  ✓ .claude/helpers/\$file"
+  else
+    rm -f "\$TMP_HELPER"
+    echo "  ✗ .claude/helpers/\$file — DOWNLOAD FAILED, kept the existing file"
+    FAILED=1
+  fi
+done
+
+# ── Skills/agents/commands bundle — optional ──────────────────────────────────
 TMP_BUNDLE="\$(mktemp -t ruflo-bundle.XXXXXX.tar.gz)"
-
-if ! curl -sf "${baseUrl}/bundle.tar.gz" -o "\$TMP_BUNDLE"; then
-  rm -f "\$TMP_BUNDLE"
-  echo "  ✗ Failed to download bundle from ${baseUrl}/bundle.tar.gz"
-  exit 1
-fi
-
-if [ "\$FORCE" = "1" ]; then
-  tar -xzf "\$TMP_BUNDLE" -C "\$PROJECT_DIR/.claude"
+if curl -sf "${baseUrl}/bundle.tar.gz" -o "\$TMP_BUNDLE"; then
+  if [ "\$FORCE" = "1" ]; then
+    tar -xzf "\$TMP_BUNDLE" -C "\$PROJECT_DIR/.claude"
+  else
+    # -k: do not overwrite existing files (preserves user customizations)
+    tar -xzkf "\$TMP_BUNDLE" -C "\$PROJECT_DIR/.claude" 2>/dev/null || true
+  fi
+  echo "  ✓ .claude/skills   (\$(ls "\$PROJECT_DIR/.claude/skills"   2>/dev/null | wc -l | tr -d ' ') entries)"
+  echo "  ✓ .claude/agents   (\$(ls "\$PROJECT_DIR/.claude/agents"   2>/dev/null | wc -l | tr -d ' ') entries)"
+  echo "  ✓ .claude/commands (\$(ls "\$PROJECT_DIR/.claude/commands" 2>/dev/null | wc -l | tr -d ' ') entries)"
 else
-  # -k: do not overwrite existing files (preserves user customizations)
-  tar -xzkf "\$TMP_BUNDLE" -C "\$PROJECT_DIR/.claude" 2>/dev/null || true
+  echo "  ⚠ bundle.tar.gz unavailable — skipped (helpers above are what matters)"
 fi
 rm -f "\$TMP_BUNDLE"
 
-# Refresh hook helpers (always overwrite — they are server-managed)
-for file in auto-memory-hook.mjs hook-handler.cjs intelligence-bridge.cjs statusline.cjs; do
-  curl -sf "${baseUrl}/templates/\$file" -o "\$PROJECT_DIR/.claude/helpers/\$file" \\
-    && echo "  ✓ .claude/helpers/\$file" \\
-    || echo "  ✗ .claude/helpers/\$file (skipped)"
-done
-
-echo "  ✓ .claude/skills   (\$(ls "\$PROJECT_DIR/.claude/skills"   2>/dev/null | wc -l | tr -d ' ') entries)"
-echo "  ✓ .claude/agents   (\$(ls "\$PROJECT_DIR/.claude/agents"   2>/dev/null | wc -l | tr -d ' ') entries)"
-echo "  ✓ .claude/commands (\$(ls "\$PROJECT_DIR/.claude/commands" 2>/dev/null | wc -l | tr -d ' ') entries)"
 echo ""
+if [ "\$FAILED" = "1" ]; then
+  # Exit non-zero so this can be scripted across projects. It used to print ✗ and
+  # still exit 0, which made a partial update look like a successful one — the
+  # same rollout found 2 of 5 projects updated with no failure signal at all.
+  echo "  ✗ NOT updated: at least one helper failed to download."
+  echo "    Re-run once ${baseUrl} is reachable, then verify the file content,"
+  echo "    not just the exit code."
+  exit 1
+fi
 echo "  Done. Restart Claude Code to load new skills and helpers."
 echo ""
 `;
