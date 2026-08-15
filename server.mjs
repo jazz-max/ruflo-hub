@@ -318,9 +318,18 @@ function readChildRssMb() {
 // from outside, which is why "ruflo is slow" has been so hard to pin down —
 // so surface it: `native` vs `fallback`.
 //
-// Caveat: graph-edge-writer also opens memory.db natively, so a WAL fd proves
-// "some native connection exists", which in practice tracks the bridge but is
-// not a formal proof of it. Returns null when /proc is unavailable.
+// Two caveats, both observed in production:
+//   1. The -wal file only exists once something has actually touched the DB, so
+//      a freshly started child reports `fallback` until the first memory
+//      operation — verified 2026-08-15: right after a recreate the field read
+//      `fallback`, and flipped to `native` after a single memory_list. Read
+//      `fallback` immediately after a restart as "not known yet", not as "bad".
+//      TODO: count memory_* calls since the child started and report `unknown`
+//      while that count is zero.
+//   2. graph-edge-writer also opens memory.db natively, so a WAL fd proves
+//      "some native connection exists", which in practice tracks the bridge but
+//      is not a formal proof of it.
+// Returns null when /proc is unavailable.
 function childMemoryRegime() {
   const pid = currentTransport?.pid;
   if (!pid) return null;
