@@ -22,11 +22,29 @@
  * put every memory operation at ~10 s and made the shared server unusable.
  * See MEMORY-DB-BLOAT-INVESTIGATION.md for the measurements.
  *
- * So this is opt-in now:
- *   RUFLO_PATTERN_STORE unset / "0" / "off"  → no pattern writes (default)
- *   RUFLO_PATTERN_STORE=1 / "on"             → write every step (old behaviour)
- *   RUFLO_PATTERN_STORE=20                   → sample: write ~1 step in 20
- * Session-summary writes from end() follow the same switch.
+ * Measured over 3.5 months of real use (37 472 rows in namespace `pattern`):
+ *
+ *   type      rows     reads   embeddings
+ *   action   37 306      197     285.9 MB   ← one per Bash/Edit call
+ *   session     166        0       1.3 MB   ← one per session
+ *
+ * The per-step `action` stream is 99.6 % of the volume for ~0.5 % of the rows
+ * ever read by key, and 11 000 of its texts are exact duplicates (every write
+ * gets a unique key, so nothing is ever deduplicated). The `session` summaries
+ * are the opposite: one row per session carrying task, outcome and duration —
+ * 1.3 MB per quarter, and the only part with retrieval value.
+ *
+ * So the two are controlled separately:
+ *   RUFLO_PATTERN_STORE   unset/"0"/"off" → no per-step writes (default)
+ *                         "1"/"on"        → write every step (old behaviour)
+ *                         "20"            → sample ~1 step in 20
+ *   RUFLO_SESSION_SUMMARY unset/"on"/"1"  → write the session summary (default)
+ *                         "0"/"off"       → don't
+ *
+ * If the per-step stream is ever to earn its keep it needs three things it does
+ * not have: dedup (upsert by content hash instead of a unique key), a TTL, and
+ * someone actually calling pattern-search. Without the last one it is a write
+ * into nowhere, however cheap the write becomes.
  */
 
 const fs = require('fs');
@@ -53,6 +71,13 @@ function patternStoreAllowed() {
   if (rate === 0) return false;
   if (rate === 1) return true;
   return Math.random() < 1 / rate;
+}
+
+// Session summaries are cheap (one row per session) and are the part with
+// retrieval value, so they default to ON — opt OUT explicitly.
+function sessionSummaryEnabled() {
+  const raw = String(process.env.RUFLO_SESSION_SUMMARY ?? '').trim().toLowerCase();
+  return !(raw === '0' || raw === 'off' || raw === 'false' || raw === 'no');
 }
 
 function readRufloConfig() {
@@ -140,9 +165,9 @@ async function step(action, result, quality) {
 async function end(success) {
   const state = readState();
   if (!state) return;
-  // Still clear the session state when writes are off, or .trajectory.json
+  // Still clear the session state when the summary is off, or .trajectory.json
   // would linger and make the next session look like a resumed one.
-  if (patternStoreRate() === 0) {
+  if (!sessionSummaryEnabled()) {
     clearState();
     return;
   }
