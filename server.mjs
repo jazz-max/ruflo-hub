@@ -81,6 +81,14 @@ let inFlight = 0;
 let respawnPendingSince = null;
 let respawning = false;
 
+// How many memory-touching tool calls this child has served. Lets
+// childMemoryRegime() tell "nothing has touched the DB yet" apart from "the
+// bridge is down": before the first such call there is no -wal file to observe,
+// and reporting that as `fallback` reads as a fault when it is not one.
+// Reset on every (re)spawn — it describes the current child, not the process.
+let memoryCallsSinceSpawn = 0;
+const MEMORY_TOOL_RE = /memory|pattern|agentdb|reasoning/i;
+
 // Persistent stats so /health can show whether reconnects have been happening.
 const stats = {
   startedAt: new Date().toISOString(),
@@ -226,6 +234,7 @@ async function connectToRuflo(reason) {
     currentTransport = transport;
     toolsResult = tools;
     connectionState = 'ready';
+    memoryCallsSinceSpawn = 0; // new child — nothing has touched the DB yet
     // Track stats: count this as a reconnect only if it's not the initial startup.
     if (reason !== 'startup') {
       stats.reconnectCount += 1;
@@ -267,6 +276,7 @@ startRssWatchdog();
 // Call with one transparent retry if the stdio child just died.
 async function callToolReliably(name, args) {
   inFlight += 1;
+  if (MEMORY_TOOL_RE.test(name)) memoryCallsSinceSpawn += 1;
   try {
     return await client.callTool({ name, arguments: args });
   } catch (err) {
@@ -318,21 +328,31 @@ function readChildRssMb() {
 // from outside, which is why "ruflo is slow" has been so hard to pin down —
 // so surface it: `native` vs `fallback`.
 //
-// Two caveats, both observed in production:
-//   1. The -wal file only exists once something has actually touched the DB, so
-//      a freshly started child reports `fallback` until the first memory
-//      operation — verified 2026-08-15: right after a recreate the field read
-//      `fallback`, and flipped to `native` after a single memory_list. Read
-//      `fallback` immediately after a restart as "not known yet", not as "bad".
-//      TODO: count memory_* calls since the child started and report `unknown`
-//      while that count is zero.
-//   2. graph-edge-writer also opens memory.db natively, so a WAL fd proves
-//      "some native connection exists", which in practice tracks the bridge but
-//      is not a formal proof of it.
-// Returns null when /proc is unavailable.
+// Values:
+//   'native'          — the child holds a live fd on memory.db-wal: the bridge is
+//                       up and memory operations cost milliseconds.
+//   'native-orphaned' — it holds a WAL fd whose file has been UNLINKED. /proc
+//                       marks such links " (deleted)". That happens when a
+//                       whole-image write (db.export() + rename) replaced
+//                       memory.db under the live native connection — the
+//                       dual-write race of upstream #2431. Rows committed to the
+//                       orphaned WAL are lost. Observed on production
+//                       2026-08-16, which is also how this state was found.
+//   'fallback'        — memory calls have happened but no WAL fd exists, so this
+//                       generation is on the sql.js whole-image path (~10-21 s
+//                       per operation on a large file).
+//   'unknown'         — no memory operation since this child started, so there is
+//                       nothing to observe yet. A fresh child used to report
+//                       'fallback' here, which read as a fault.
+//   null              — /proc unavailable (not Linux, or the child is gone).
+//
+// Caveat that remains: graph-edge-writer also opens memory.db natively, so a WAL
+// fd proves "some native connection exists". In practice that tracks the bridge,
+// but it is not a formal proof of it.
 function childMemoryRegime() {
   const pid = currentTransport?.pid;
   if (!pid) return null;
+  let orphaned = false;
   try {
     for (const fd of readdirSync(`/proc/${pid}/fd`)) {
       let target;
@@ -342,11 +362,13 @@ function childMemoryRegime() {
         continue; // fd closed while we were looking
       }
       if (target.endsWith('/memory.db-wal')) return 'native';
+      if (target.endsWith('/memory.db-wal (deleted)')) orphaned = true;
     }
-    return 'fallback';
   } catch {
     return null; // not Linux / child gone
   }
+  if (orphaned) return 'native-orphaned';
+  return memoryCallsSinceSpawn === 0 ? 'unknown' : 'fallback';
 }
 
 // Respawn the leaking child by reconnecting (connectToRuflo kills the old child
@@ -498,10 +520,10 @@ app.get('/health', (_req, res) => {
     lastReconnectReason: stats.lastReconnectReason,
     childRssMB: readChildRssMb(),
     childMaxRssMB: CHILD_MAX_RSS_MB,
-    // 'native' = AgentDB bridge holds memory.db in WAL (memory ops ~ms);
-    // 'fallback' = bridge init failed for this child, every op rewrites the
-    // whole DB image (~10-21 s on a large file). null = /proc unavailable.
+    // native | native-orphaned | fallback | unknown | null — see childMemoryRegime()
     childMemoryRegime: childMemoryRegime(),
+    // Lets a reader interpret `unknown`, and shows how much this child has done.
+    memoryCallsSinceSpawn,
     childRespawnCount: stats.childRespawnCount,
     lastChildRespawnAt: stats.lastChildRespawnAt,
     lastChildRespawnRssMB: stats.lastChildRespawnRssMB,
