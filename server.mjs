@@ -331,13 +331,23 @@ function readChildRssMb() {
 // Values:
 //   'native'          — the child holds a live fd on memory.db-wal: the bridge is
 //                       up and memory operations cost milliseconds.
-//   'native-orphaned' — it holds a WAL fd whose file has been UNLINKED. /proc
-//                       marks such links " (deleted)". That happens when a
-//                       whole-image write (db.export() + rename) replaced
-//                       memory.db under the live native connection — the
-//                       dual-write race of upstream #2431. Rows committed to the
-//                       orphaned WAL are lost. Observed on production
-//                       2026-08-16, which is also how this state was found.
+//   'native-stale'    — it holds a WAL fd whose file was UNLINKED, but its fd on
+//                       memory.db itself is still live. /proc marks unlinked
+//                       links " (deleted)". This is the signature of a clean
+//                       checkpoint: SQLite folds the WAL into the main file and
+//                       only then unlinks the sidecars, so nothing is lost — the
+//                       child merely holds stale handles. Observed on production
+//                       2026-08-18: memory.db fd live, mtime advanced to
+//                       13:51:52, file grown to 4.5 MB, no -wal on disk.
+//   'native-replaced' — the WAL fd AND the memory.db fd are both unlinked, i.e.
+//                       the image was replaced wholesale under the live native
+//                       connection (db.export() + rename) — the dual-write race
+//                       of upstream #2431. THIS is the case where rows committed
+//                       to the orphaned WAL are lost.
+//                       The two were one value ('native-orphaned') at first,
+//                       which cried wolf on the harmless case. An indicator that
+//                       alarms when everything is fine stops being read, and then
+//                       it fails to alarm when something is actually wrong.
 //   'fallback'        — memory calls have happened but no WAL fd exists, so this
 //                       generation is on the sql.js whole-image path (~10-21 s
 //                       per operation on a large file).
@@ -352,7 +362,9 @@ function readChildRssMb() {
 function childMemoryRegime() {
   const pid = currentTransport?.pid;
   if (!pid) return null;
-  let orphaned = false;
+  let walLive = false;
+  let walUnlinked = false;
+  let dbUnlinked = false;
   try {
     for (const fd of readdirSync(`/proc/${pid}/fd`)) {
       let target;
@@ -361,13 +373,18 @@ function childMemoryRegime() {
       } catch {
         continue; // fd closed while we were looking
       }
-      if (target.endsWith('/memory.db-wal')) return 'native';
-      if (target.endsWith('/memory.db-wal (deleted)')) orphaned = true;
+      if (target.endsWith('/memory.db-wal')) walLive = true;
+      else if (target.endsWith('/memory.db-wal (deleted)')) walUnlinked = true;
+      else if (target.endsWith('/memory.db (deleted)')) dbUnlinked = true;
     }
   } catch {
     return null; // not Linux / child gone
   }
-  if (orphaned) return 'native-orphaned';
+  if (walLive) return 'native';
+  // Both unlinked → the image was swapped under the connection (data at risk);
+  // WAL alone → a checkpoint folded it in and removed it (harmless).
+  if (walUnlinked) return dbUnlinked ? 'native-replaced' : 'native-stale';
+  if (dbUnlinked) return 'native-replaced';
   return memoryCallsSinceSpawn === 0 ? 'unknown' : 'fallback';
 }
 
@@ -520,7 +537,8 @@ app.get('/health', (_req, res) => {
     lastReconnectReason: stats.lastReconnectReason,
     childRssMB: readChildRssMb(),
     childMaxRssMB: CHILD_MAX_RSS_MB,
-    // native | native-orphaned | fallback | unknown | null — see childMemoryRegime()
+    // native | native-stale | native-replaced | fallback | unknown | null
+    // — see childMemoryRegime(); only native-replaced means data may be lost
     childMemoryRegime: childMemoryRegime(),
     // Lets a reader interpret `unknown`, and shows how much this child has done.
     memoryCallsSinceSpawn,
